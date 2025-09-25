@@ -139,9 +139,15 @@ module testbench #(
         .o_data      (odata    )
     );
 
+    // initial begin
+    //    $fsdbDumpfile("alu.fsdb");
+    //    $fsdbDumpvars(0, testbench, "+mda");
+    // end
+    // VCD output for Icarus Verilog / GTKWave
+    // vcd output for Icarus Verilog / GTKWave
     initial begin
-       $fsdbDumpfile("alu.fsdb");
-       $fsdbDumpvars(0, testbench, "+mda");
+       $dumpfile("alu.vcd");
+       $dumpvars(0, testbench);
     end
 
     // Input

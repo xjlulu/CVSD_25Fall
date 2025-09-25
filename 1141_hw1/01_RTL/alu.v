@@ -8,12 +8,12 @@ module alu #(
     input                      i_rst_n,
 
     input                      i_in_valid,
-    output                     o_busy,
+    output reg                 o_busy,
     input         [INST_W-1:0] i_inst,
     input  signed [DATA_W-1:0] i_data_a,
     input  signed [DATA_W-1:0] i_data_b,
 
-    output                     o_out_valid,
+    output reg                 o_out_valid,
     output reg    [DATA_W-1:0] o_data
 );
 /******************************************* Parameters ********************************************/
@@ -30,24 +30,31 @@ parameter TRANS  = 4'b1001; // Transpose an 8*8 matrix
 
 parameter MAX_VAL = {1'b0, {(DATA_W-1){1'b1}}};
 parameter MIN_VAL = {1'b1, {(DATA_W-1){1'b0}}};
+parameter FINAL_TRANS_COUNT  = 8;
+parameter CNT_W  = 4;
 
 /******************************************* Internal Signals ****************************************/
-reg                       in_valid_reg_1, in_valid_reg_2;
+reg                       in_valid_reg;
 reg  [INST_W-1:0]         inst_reg_1, inst_reg_2;
 reg  [DATA_W-1:0]         a_reg, b_reg, ab_reg, data_acc;
+reg [CNT_W-1:0] rot_count;
+reg [3:0] trans_count;
+reg [DATA_W-1:0] rot_out;
 
-wire data_acc_update = (inst_reg_1 == MAC) && in_valid_reg_1;
-
-wire [DATA_W:0]   a_comp_temp = {1'b0, ~a_reg} + {{DATA_W{1'b0}}, 1'b1};
-wire [DATA_W:0]   b_comp_temp = {1'b0, ~b_reg} + {{DATA_W{1'b0}}, 1'b1};
-wire [DATA_W-1:0] a_comp      = a_comp_temp[DATA_W-1:0];
-wire [DATA_W-1:0] b_comp      = b_comp_temp[DATA_W-1:0];
+wire data_acc_update        = (inst_reg_1 == MAC) && in_valid_reg;
+wire is_final_rot_count     = ((rot_count == b_reg[CNT_W-1:0]) || (b_reg[CNT_W:0] == 5'd16)) && (inst_reg_1 == ROT);
+wire is_finalm1_trans_count = trans_count == FINAL_TRANS_COUNT - 1;
+wire is_final_trans_count   = trans_count == FINAL_TRANS_COUNT;
+wire trans_ready            = i_inst == TRANS && i_in_valid && is_finalm1_trans_count && !o_busy;
+wire o_data_update_rot      = (inst_reg_1 == ROT  ) && ((is_final_rot_count  ) || !o_busy);
+wire o_data_update_trans    = (inst_reg_2 == TRANS) && !is_final_trans_count && o_busy;
+wire o_data_update          = o_data_update_trans || o_data_update_rot;
 
 /******************************************* ALU core ***********************************************/
 
 /******************************************* ALU core ***********************************************/
 wire [DATA_W-1:0]   add_in_a = (inst_reg_1 == MAC) ? data_acc : a_reg;
-wire [DATA_W-1:0]   add_in_b = (inst_reg_1 == SUB) ? b_comp :
+wire [DATA_W-1:0]   add_in_b = (inst_reg_1 == SUB) ? twos_complement(b_reg) :
                                (inst_reg_1 == MAC) ? ab_reg :
                                                      b_reg  ;
 
@@ -59,19 +66,16 @@ wire                overflow = (sum[DATA_W] ^ sum[DATA_W - 1]) && sign_eq;
 wire [DATA_W-1:0]   add_out  = (!overflow) ? sum[DATA_W-1:0]
                                            : (a_sign ? MIN_VAL : MAX_VAL);
 
-// MAC
-wire [DATA_W-1:0] comp_i_data_a = twos_complement(i_data_a);
-wire [DATA_W-1:0] comp_i_data_b = twos_complement(i_data_b);
-wire [DATA_W-1:0] mult_in_a = (i_data_a[DATA_W-1]) ? comp_i_data_a : i_data_a;
-wire [DATA_W-1:0] mult_in_b = (i_data_b[DATA_W-1]) ? comp_i_data_b : i_data_b;
-wire [2*DATA_W-1:0] mult_out = {16'b0, mult_in_a} * {16'b0, mult_in_b};
-// wire [DATA_W-1:0] nearest = (mult_out[DATA_W-1:0] == 16'b0) ? 16'd0 : 16'd1;
-// wire [DATA_W-1:0] mult_out_round = mult_out[FRAC_W+:DATA_W] + nearest;
-// wire [DATA_W-1:0] mult_out_round = mult_out[FRAC_W+:DATA_W] + {15'b0, mult_out[FRAC_W-1]};
-wire [DATA_W-1:0] mult_out_round = mult_out[FRAC_W+:DATA_W];
-wire [DATA_W-1:0] ab_reg_in = (i_data_a[DATA_W-1] ^ i_data_b[DATA_W-1]) ? twos_complement(mult_out_round) : mult_out_round;
+/******************************************* ALU:MAC ******************************************/
+wire [DATA_W-1:0] comp_i_data_a  = twos_complement(i_data_a);
+wire [DATA_W-1:0] comp_i_data_b  = twos_complement(i_data_b);
+wire [DATA_W-1:0] mult_in_a      = (i_data_a[DATA_W-1]) ? comp_i_data_a : i_data_a;
+wire [DATA_W-1:0] mult_in_b      = (i_data_b[DATA_W-1]) ? comp_i_data_b : i_data_b;
+wire [DATA_W:0]   mult_full      = (mult_in_a * mult_in_b) >> (FRAC_W-1);
+wire [DATA_W-1:0] mult_out_round = mult_full[DATA_W:1] + {{(DATA_W-1){1'b0}}, mult_full[0]};
+wire [DATA_W-1:0] ab_reg_in      = (i_data_a[DATA_W-1] ^ i_data_b[DATA_W-1]) ? twos_complement(mult_out_round) : mult_out_round;
 
-wire [DATA_W-1:0]   data_acc_in = add_out;
+wire [DATA_W-1:0] data_acc_in    = add_out;
 
 // I1:  0000011001010010 1111110100100011
 // g1:  1111101101111010
@@ -107,38 +111,278 @@ wire [DATA_W-1:0]   data_acc_in = add_out;
 // GRAY
 // wire [DATA_W-1:0] axorb = a_reg ^ b_reg;
 
-// ROT
-wire [DATA_W-1:0] rot_out;
-reg [3:0] count;
+/******************************************* ALU:ROT ******************************************/
+wire rot_start = !o_busy && i_in_valid && (i_inst == ROT);
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        count <= 4'b0;
+        o_busy <= 1'b0;
     end
-    begin 
+    else if (rot_start || trans_ready) begin
+        o_busy <= 1'b1;
+    end
+    else if (is_final_rot_count || (is_final_trans_count && o_busy)) begin
+        o_busy <= 1'b0;
+    end
 end
 
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        rot_out   <= {DATA_W{1'b0}};
+    end
+    else if (rot_start) begin
+        rot_out <= i_data_a;
+    end
+    else if (o_busy) begin
+        rot_out <= {rot_out[0], rot_out[DATA_W-1:1]};
+    end
+end
+
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        rot_count <= {CNT_W{1'b0}};
+    end
+    else if (is_final_rot_count) begin
+        rot_count <= {CNT_W{1'b0}};
+    end
+    else if (rot_start) begin
+        rot_count <= {CNT_W{1'b0}};
+    end
+    else if (o_busy) begin
+        rot_count <= rot_count + 1'b1;
+    end
+end
+/******************************************* ALU:GRAY ******************************************/
+reg [DATA_W-1:0] gray_out;
+always @(*) begin
+    for (integer i = 0; i < DATA_W-1; i = i + 1) begin
+        gray_out[i] = a_reg[i+1] ^ a_reg[i];
+    end
+    gray_out[DATA_W-1] = a_reg[DATA_W-1];
+end
+
+/******************************************* ALU:RM4 ******************************************/
+// I8
+reg [DATA_W-1:0] rm4_out;
+always @(*) begin
+    for (integer i = 0; i < 13; i = i + 1) begin
+        rm4_out[i] = (a_reg[i+:4] == b_reg[15-i-:4]);
+    end
+    rm4_out[15:13] = 3'b0;
+end
+
+/******************************************* ALU:LRCW ******************************************/
+wire [DATA_W-1:0] lrcw_out = grp16(a_reg, b_reg);
+
+/******************************************* ALU:TRANS ******************************************/
+// 將原 matrix 改為單一 reg
+reg [127:0] matrix_flat; // 64*2 = 128 bits
+
+wire trans_start = !o_busy && i_in_valid && i_inst == TRANS && (!is_final_trans_count || (is_final_trans_count && o_busy));
+wire matrix_out_update = (inst_reg_2 == TRANS && o_busy) || (inst_reg_1 == TRANS && is_final_trans_count && !o_busy);
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        matrix_flat <= 128'b0;
+    end
+    else if (trans_start) begin
+        // shift up 每行 16 bits
+        matrix_flat[0 +: 112] <= matrix_flat[16 +: 112]; // 上移 1 行
+        // load new row 到最後一行
+        for (integer j = 0; j < 8; j = j + 1) begin
+            matrix_flat[112 + j*2 +: 2] <= i_data_a[j*2 +: 2];
+        end
+    end
+    else if (matrix_out_update) begin
+        // shift left 每列 2 bits
+        for (integer i = 0; i < 8; i = i + 1) begin
+            matrix_flat[i*16 + 2 +: 14] <= matrix_flat[i*16 +: 14]; // 左移 1 列
+            matrix_flat[i*16 +: 2] <= 2'b0; // 清最後一列
+        end
+    end
+end
+
+// trans_count 保持不變
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        trans_count <= 4'b0;
+    end
+    else if (inst_reg_2 == TRANS && is_final_trans_count && o_busy) begin
+        trans_count <= 4'b0;
+    end
+    else if (trans_ready) begin
+        trans_count <= 4'd0;
+    end
+    else if (trans_start) begin
+        trans_count <= trans_count + 1'b1;
+    end
+    else if (o_busy && !is_final_trans_count) begin
+        trans_count <= trans_count + 1'b1;
+    end
+end
+
+// 組合輸出
+reg [DATA_W-1:0] trans_out;
+always @(*) begin
+    for (integer i = 0; i < 8; i = i + 1) begin
+        trans_out[i*2 +: 2] = matrix_flat[(127-i*16) -: 2]; // 取每行第一列
+    end
+end
+// reg [1:0] matrix [7:0][7:0];
+// wire trans_start = !o_busy && i_in_valid && i_inst == TRANS;
+
+// always @(posedge i_clk or negedge i_rst_n) begin
+//     if (!i_rst_n) begin
+//         for (integer i = 0; i < 8; i = i + 1) begin
+//             for (integer j = 0; j < 8; j = j + 1) begin
+//                 matrix[i][j] <= 2'b0;
+//             end
+//         end
+//     end
+//     else if (trans_start) begin
+//         for (integer i = 0; i < 7; i = i + 1) begin
+//             for (integer j = 0; j < 8; j = j + 1) begin
+//                 matrix[i][j] <= matrix[i+1][j];
+//             end
+//         end
+//         for (integer j = 0; j < 8; j = j + 1) begin
+//             matrix[7][j] <= i_data_a[j*2 +: 2]; 
+//         end
+//     end
+//     else if (o_busy) begin
+//         for (integer j = 0; j < 7; j = j + 1) begin
+//             for (integer i = 0; i < 8; i = i + 1) begin
+//                 matrix[i][j] <= matrix[i][j+1];
+//             end
+//         end
+//         for (integer j = 0; j < 8; j = j + 1) begin
+//             matrix[7][j] <= 2'b0;
+//         end
+//     end
+// end
+
+// always @(posedge i_clk or negedge i_rst_n) begin
+//     if (!i_rst_n) begin
+//         trans_count <= {4{1'b0}};
+//     end
+//     else if (is_final_trans_count) begin
+//         trans_count <= {4{1'b0}};
+//     end
+//     else if (trans_start) begin
+//         trans_count <= trans_count + 1'b1;
+//     end
+//     else if (o_busy) begin
+//         trans_count <= trans_count + 1'b1;
+//     end
+// end
+// // wire [DATA_W-1:0] trans_out = {matrix[0][0], matrix[1][0], matrix[2][0], matrix[3][0], matrix[4][0], matrix[5][0], matrix[6][0], matrix[7][0]};
+// reg [DATA_W-1:0] trans_out;
+// always @(*) begin
+//     for (integer i = 0; i < 8; i = i + 1) begin
+//         trans_out[i*2+:2] = matrix[i][0];
+//     end
+// end
+
+// input 1
+// 10 01 11 01 01 00 01 00
+// 10 01 11 10 11 01 10 10
+// 10 10 01 01 00 10 01 11
+// 01 11 00 00 01 00 10 11
+// 10 10 11 11 10 00 00 00
+// 11 11 01 00 01 01 00 10
+// 11 11 11 00 10 00 10 00
+// 00 00 11 00 10 00 00 01
+
+// gold 1
+// 10 10 10 01 10 11 11 00
+// 01 01 10 11 10 11 11 00
+// 11 11 01 00 11 01 11 11
+// 01 10 01 00 11 00 00 00
+// 01 11 00 01 10 01 10 10
+// 00 01 10 00 00 01 00 00
+// 01 10 01 10 00 00 10 00
+// 00 10 11 11 00 10 00 01
+
+// input 2
+// 11 01 00 01 11 10 11 11
+// 00 00 01 01 00 11 10 01
+// 10 10 11 01 00 11 00 11
+// 01 00 11 11 11 11 00 10
+// 10 10 00 00 10 11 11 00
+// 10 01 00 10 10 11 01 01
+// 11 11 00 10 11 10 11 00
+// 10 00 10 11 10 01 01 11
+
+// gold 2
+// 11 00 10 01 10 10 11 10
+// 01 00 10 00 10 01 11 00
+// 00 01 11 11 00 00 00 10
+// 01 01 01 11 00 10 10 11
+// 11 00 00 11 10 10 11 10
+// 10 11 11 11 11 11 10 01
+// 11 10 00 00 11 01 11 01
+// 11 01 11 10 00 01 00 11
+
 /******************************************* Control Logic ******************************************/
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        o_out_valid <= 0;
+    end
+    else begin
+        // if (inst_reg_1 == TRANS && !o_busy && is_final_trans_count) begin
+        //     o_out_valid      <= 1'b1;
+        // end
+        // else 
+        if (o_data_update) begin
+            o_out_valid      <= 1'b1;
+        end
+        else begin
+            o_out_valid      <= 1'b0;
+        end
+    end
+end 
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         a_reg          <= 0;
         b_reg          <= 0;
         inst_reg_1     <= 0;
-        in_valid_reg_1 <= 0;
-        in_valid_reg_2 <= 0;
+        in_valid_reg <= 0;
     end
     else begin
-        in_valid_reg_1 <= i_in_valid;
-        in_valid_reg_2 <= in_valid_reg_1;
-        if (i_in_valid && !o_busy) begin
+        if (!o_busy) begin
+            in_valid_reg     <= i_in_valid;
+        end
+        else if (o_data_update) begin
+            in_valid_reg     <= i_in_valid;
+        end
+        else begin
+            o_out_valid      <= 1'b0;
+        end
+
+        if (o_busy) begin
+            inst_reg_1   <= inst_reg_1;
+            a_reg        <= a_reg;
+            b_reg        <= b_reg;
+        end
+        else if (!o_busy && i_in_valid) begin
             inst_reg_1   <= i_inst;
             a_reg        <= i_data_a;
             b_reg        <= i_data_b;
         end
-        if (in_valid_reg_1) begin
+        if (o_busy) begin
+            inst_reg_2   <= inst_reg_2;
+        end
+        // else if (inst_reg_2 == TRANS && !o_busy && is_final_trans_count) begin
+        //     inst_reg_2   <= inst_reg_2;
+        // end
+        else if (!o_busy && in_valid_reg) begin
             inst_reg_2   <= inst_reg_1;
+        end
+        else begin
+            inst_reg_2 <= {INST_W{1'b0}};
         end
     end
 end
+
+
 
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
@@ -165,41 +409,41 @@ always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         o_data     <= 0;
     end
-    else if(inst_reg_1 == ADD || inst_reg_1 == SUB) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == MAC) begin
-        o_data     <= data_acc_in;
-    end
-    else if(inst_reg_1 == SIN) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == GRAY) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == LRCW) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == ROT) begin
-        o_data     <= rot_out;
-    end
-    else if(inst_reg_1 == CLZ) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == RM4) begin
-        o_data     <= add_out;
-    end
-    else if(inst_reg_1 == TRANS) begin
-        o_data     <= add_out;
-    end
-    else begin
-        o_data     <= 0;
+    else if (o_data_update) begin
+        if(inst_reg_1 == ADD || inst_reg_1 == SUB) begin
+            o_data     <= add_out;
+        end
+        else if(inst_reg_1 == MAC) begin
+            o_data     <= data_acc_in;
+        end
+        else if(inst_reg_1 == SIN) begin
+            o_data     <= add_out;
+        end
+        else if(inst_reg_1 == GRAY) begin
+            o_data     <= gray_out;
+        end
+        else if(inst_reg_1 == LRCW) begin
+            o_data     <= lrcw_out;
+        end
+        else if(inst_reg_1 == ROT) begin
+            o_data     <= rot_out;
+        end
+        else if(inst_reg_1 == CLZ) begin
+            o_data     <= add_out;
+        end
+        else if(inst_reg_1 == RM4) begin
+            o_data     <= rm4_out;
+        end
+        else if(inst_reg_1 == TRANS) begin
+            o_data     <= trans_out;
+        end
+        else begin
+            o_data     <= 0;
+        end
     end
 end
 
 /******************************************* Output Signal ******************************************/
-assign o_busy = 1'b0;
-assign o_out_valid = in_valid_reg_2;
 
 /******************************************* ALU Function ******************************************/
 // compute the two's complement of a signed number
@@ -208,5 +452,32 @@ function signed [DATA_W-1:0] twos_complement (
 );
     twos_complement = ~in_data + 1;
 endfunction
+
+function [15:0] grp16;
+    input [15:0] grp_a_reg;  // data word
+    input [15:0] grp_b_reg;  // control word
+    integer left_pos, right_pos;
+    reg [15:0] temp;
+begin
+    left_pos  = 0;      //(LSB -> MSB)
+    right_pos = 15;     //(MSB -> LSB)
+    temp      = 16'b0;
+
+    for (integer i=0; i<16; i=i+1) begin
+        if (grp_b_reg[i] == 1'b0) begin
+            // L-group
+            temp[left_pos] = grp_a_reg[i];
+            left_pos = left_pos + 1;
+        end else begin
+            // R-group
+            temp[right_pos] = grp_a_reg[i];
+            right_pos = right_pos - 1;
+        end
+    end
+
+    grp16 = temp;
+end
+endfunction
+
 
 endmodule
