@@ -36,20 +36,28 @@ parameter MAX_VAL36 = {1'b0, {35{1'b1}}};
 parameter MIN_VAL36 = {1'b1, {35{1'b0}}};
 parameter FINAL_TRANS_COUNT  = 8;
 parameter CNT_W  = 4;
+// Q6.10 format constants for fractional values
+parameter CONST_HALF       = 16'b000000_100000000000; // 1/2 = 0.5 in Q6.10
+parameter CONST_ONE_THIRD  = 16'b000000_010101010101; // 1/3 ≈ 0.3333 in Q6.10
+parameter CONST_ONE_FOURTH = 16'b000000_010000000000; // 1/4 = 0.25 in Q6.10
+parameter CONST_ONE_FIFTH  = 16'b000000_001100110011; // 1/5 ≈ 0.2 in Q6.10
 
 /******************************************* Internal Signals ****************************************/
 reg                 in_valid_reg;
-reg [INST_W-1:0]    inst_reg_1, inst_reg_2;
-reg [DATA_W-1:0]    a_reg, b_reg;
-reg [2*DATA_W-1:0]  ab_reg;
-reg [35:0]          data_acc;
-reg [CNT_W-1:0]     rot_count;
-reg [CNT_W-1:0]     clz_count;
-reg [CNT_W-1:0]     trans_count;
-reg [DATA_W-1:0]    rot_out;
+reg  [INST_W-1:0]   inst_reg_1, inst_reg_2;
+reg  [DATA_W-1:0]   a_reg, b_reg;
+reg  [2*DATA_W-1:0] ab_reg;
+reg  [35:0]         data_acc;
+reg  [CNT_W-1:0]    lrcw_count;
+reg  [CNT_W-1:0]    rot_count;
+reg  [CNT_W-1:0]    clz_count;
+reg  [CNT_W-1:0]    trans_count;
+wire [DATA_W-1:0]   lrcw_out;
+reg  [DATA_W-1:0]   rot_out;
 
+wire is_final_lrcw_count    = ((lrcw_count == 4'd15) || (a_reg == 16'd0) || (a_reg == {16{1'b1}})) && (inst_reg_1 == LRCW);
 wire is_final_rot_count     = ((rot_count == b_reg[CNT_W-1:0]) || (b_reg[CNT_W-1:0] == 4'd0)) && (inst_reg_1 == ROT);
-wire is_final_clz_count     = ((a_reg[15-clz_count] == 1'b1) || (clz_count == 4'd15) || (a_reg[DATA_W-1:0] == 16'd0)) && (inst_reg_1 == CLZ);
+wire is_final_clz_count     = ((a_reg[15-clz_count] == 1'b1) || (clz_count == 4'd14) || (a_reg[DATA_W-1:0] == 16'd0)) && (inst_reg_1 == CLZ);
 wire is_finalm1_trans_count = trans_count == FINAL_TRANS_COUNT - 1;
 wire is_final_trans_count   = trans_count == FINAL_TRANS_COUNT;
 wire trans_ready            = i_inst == TRANS && i_in_valid && is_finalm1_trans_count && !o_busy;
@@ -57,14 +65,17 @@ wire o_data_update_add      = (inst_reg_1 == ADD  || inst_reg_1 == SUB) && in_va
 wire o_data_update_mac      = (inst_reg_1 == MAC  ) && in_valid_reg;
 wire o_data_update_gray     = (inst_reg_1 == GRAY ) && in_valid_reg;
 wire o_data_update_rm4      = (inst_reg_1 == RM4  ) && in_valid_reg;
-wire o_data_update_rot      = (inst_reg_1 == ROT  ) && (is_final_rot_count && o_busy);
-wire o_data_update_clz      = (inst_reg_1 == CLZ  ) && (is_final_clz_count && o_busy);
+wire o_data_update_lrcw     = (inst_reg_1 == LRCW ) && (is_final_lrcw_count && o_busy);
+wire o_data_update_rot      = (inst_reg_1 == ROT  ) && (is_final_rot_count  && o_busy);
+wire o_data_update_clz      = (inst_reg_1 == CLZ  ) && (is_final_clz_count  && o_busy);
 wire o_data_update_trans    = (inst_reg_2 == TRANS) && !is_final_trans_count && o_busy;
-wire o_data_update          = o_data_update_add || o_data_update_mac || o_data_update_gray || o_data_update_rm4 || o_data_update_rot || o_data_update_clz || o_data_update_trans;
+wire o_data_update          = o_data_update_add || o_data_update_mac || o_data_update_gray || o_data_update_rm4 || o_data_update_lrcw || o_data_update_rot || o_data_update_clz || o_data_update_trans;
+wire lrcw_start             = !o_busy && i_in_valid && (i_inst == LRCW );
 wire rot_start              = !o_busy && i_in_valid && (i_inst == ROT  );
 wire clz_start              = !o_busy && i_in_valid && (i_inst == CLZ  );
 wire trans_start            = !o_busy && i_in_valid && (i_inst == TRANS);
 wire matrix_out_update      =  o_busy && (inst_reg_2 == TRANS);
+wire lrcw_done              = is_final_lrcw_count;
 wire rot_done               = is_final_rot_count;
 wire clz_done               = is_final_clz_count;
 wire trans_done             = is_final_trans_count && o_busy;
@@ -155,23 +166,53 @@ wire [DATA_W-1:0] mac_out = (!mac_add_out_overflow) ? (sign_mac_add_out ? comp_p
 // GRAY
 // wire [DATA_W-1:0] axorb = a_reg ^ b_reg;
 
+/******************************************* ALU:SIN ******************************************/
+// I1: 1111111110001000
+// G1: 1111111110001000
+
+
+
 /******************************************* ALU:LRCW ******************************************/
-
-
-
-/******************************************* ALU:ROT ******************************************/
+//    a: 0101100000101000
+//    b: 1110011000101110
+// h(a): 5
+//    b: 11100 11000101110
+//       00011 11000101110
+// L(b): 1100010111000011
+reg [DATA_W-1:0] lrcw_b_reg;
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        o_busy <= 1'b0;
+        lrcw_b_reg   <= {DATA_W{1'b0}};
     end
-    else if (rot_start || clz_start || trans_ready) begin
-        o_busy <= 1'b1;
+    else if (lrcw_start) begin
+        lrcw_b_reg <= i_data_b;
     end
-    else if (rot_done || clz_done || trans_done) begin
-        o_busy <= 1'b0;
+    else if (o_busy && a_reg[lrcw_count]) begin
+        lrcw_b_reg <= {lrcw_b_reg[DATA_W-2:0], ~lrcw_b_reg[DATA_W-1]};
+    end
+end
+assign lrcw_out = (a_reg == {16{1'b0}}) ?  b_reg :
+                  (a_reg == {16{1'b1}}) ? ~b_reg :
+                  (a_reg[lrcw_count])   ? {lrcw_b_reg[DATA_W-2:0], ~lrcw_b_reg[DATA_W-1]} :
+                                           lrcw_b_reg;
+
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        lrcw_count <= {CNT_W{1'b0}};
+    end
+    else if (is_final_lrcw_count) begin
+        lrcw_count <= {CNT_W{1'b0}};
+    end
+    else if (lrcw_start) begin
+        lrcw_count <= {CNT_W{1'b0}};
+    end
+    else if (o_busy) begin
+        lrcw_count <= lrcw_count + 1'b1;
     end
 end
 
+
+/******************************************* ALU:ROT ******************************************/
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         rot_out   <= {DATA_W{1'b0}};
@@ -236,9 +277,6 @@ always @(*) begin
     end
     rm4_out[15:13] = 3'b0;
 end
-
-/******************************************* ALU:LRCW ******************************************/
-wire [DATA_W-1:0] lrcw_out = grp16(a_reg, b_reg);
 
 /******************************************* ALU:TRANS ******************************************/
 // 將原 matrix 改為單一 reg
@@ -444,6 +482,18 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
 end
 
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        o_busy <= 1'b0;
+    end
+    else if (lrcw_start || rot_start || clz_start || trans_ready) begin
+        o_busy <= 1'b1;
+    end
+    else if (lrcw_done || rot_done || clz_done || trans_done) begin
+        o_busy <= 1'b0;
+    end
+end
+
 /******************************************* ALU Function ******************************************/
 // compute the two's complement of a signed number
 function signed [DATA_W-1:0] twos_complement (
@@ -468,32 +518,6 @@ function signed [35:0] twos_complement36 (
     input signed [35:0] in_data36
 );
     twos_complement36 = ~in_data36 + 1;
-endfunction
-
-function [15:0] grp16;
-    input [15:0] grp_a_reg;  // data word
-    input [15:0] grp_b_reg;  // control word
-    integer left_pos, right_pos;
-    reg [15:0] temp;
-begin
-    left_pos  = 0;      //(LSB -> MSB)
-    right_pos = 15;     //(MSB -> LSB)
-    temp      = 16'b0;
-
-    for (integer i=0; i<16; i=i+1) begin
-        if (grp_b_reg[i] == 1'b0) begin
-            // L-group
-            temp[left_pos] = grp_a_reg[i];
-            left_pos = left_pos + 1;
-        end else begin
-            // R-group
-            temp[right_pos] = grp_a_reg[i];
-            right_pos = right_pos - 1;
-        end
-    end
-
-    grp16 = temp;
-end
 endfunction
 
 
