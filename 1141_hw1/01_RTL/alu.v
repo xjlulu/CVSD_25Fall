@@ -30,13 +30,19 @@ parameter TRANS  = 4'b1001; // Transpose an 8*8 matrix
 
 parameter MAX_VAL = {1'b0, {(DATA_W-1){1'b1}}};
 parameter MIN_VAL = {1'b1, {(DATA_W-1){1'b0}}};
+parameter MAX_VAL26 = {1'b0, {25{1'b1}}};
+// parameter MIN_VAL26 = {1'b1, {25{1'b0}}};
+parameter MAX_VAL36 = {1'b0, {35{1'b1}}};
+parameter MIN_VAL36 = {1'b1, {35{1'b0}}};
 parameter FINAL_TRANS_COUNT  = 8;
 parameter CNT_W  = 4;
 
 /******************************************* Internal Signals ****************************************/
 reg                 in_valid_reg;
 reg [INST_W-1:0]    inst_reg_1, inst_reg_2;
-reg [DATA_W-1:0]    a_reg, b_reg, ab_reg, data_acc;
+reg [DATA_W-1:0]    a_reg, b_reg;
+reg [2*DATA_W-1:0]  ab_reg;
+reg [35:0]          data_acc;
 reg [CNT_W-1:0]     rot_count;
 reg [CNT_W-1:0]     clz_count;
 reg [CNT_W-1:0]     trans_count;
@@ -67,30 +73,48 @@ wire data_acc_update        = o_data_update_mac;
 /******************************************* ALU core ***********************************************/
 
 /******************************************* ALU core ***********************************************/
-wire [DATA_W-1:0]   add_in_a = a_reg;
-wire [DATA_W-1:0]   macadd_in_a = data_acc;
-wire [DATA_W-1:0]   add_in_b = (inst_reg_1 == SUB) ? twos_complement(b_reg) : b_reg;
-wire [DATA_W-1:0]   macadd_in_b = ab_reg;
+wire [DATA_W-1:0]   add_in_a       = a_reg;
+wire [DATA_W-1:0]   add_in_b       = (inst_reg_1 == SUB) ? twos_complement(b_reg) : b_reg;
 
-wire                a_sign   = add_in_a[DATA_W-1];
-wire                b_sign   = add_in_b[DATA_W-1];
-wire                sign_eq  = (a_sign == b_sign);
+wire                sign_eq  = (add_in_a[DATA_W-1] == add_in_b[DATA_W-1]);
 wire [DATA_W:0]     sum      = add_in_a + add_in_b;
 wire                overflow = (sum[DATA_W] ^ sum[DATA_W - 1]) && sign_eq;
 wire [DATA_W-1:0]   add_out  = (!overflow) ? sum[DATA_W-1:0]
-                                           : (a_sign ? MIN_VAL : MAX_VAL);
+                                           : (add_in_a[DATA_W-1] ? MIN_VAL : MAX_VAL);
 
 /******************************************* ALU:MAC ******************************************/
-wire [DATA_W-1:0] comp_i_data_a  = twos_complement(i_data_a);
-wire [DATA_W-1:0] comp_i_data_b  = twos_complement(i_data_b);
-wire [DATA_W-1:0] mult_in_a      = (i_data_a[DATA_W-1]) ? comp_i_data_a : i_data_a;
-wire [DATA_W-1:0] mult_in_b      = (i_data_b[DATA_W-1]) ? comp_i_data_b : i_data_b;
-wire [2*DATA_W-1:0] mult_full    = (mult_in_a * mult_in_b);
-wire [DATA_W:0]   mult_shift     = mult_full [DATA_W + FRAC_W - 1 : FRAC_W - 1];
-wire [DATA_W-1:0] mult_out_round = mult_shift[DATA_W:1] + {{(DATA_W-1){1'b0}}, mult_shift[0]};
-wire [DATA_W-1:0] ab_reg_in      = (i_data_a[DATA_W-1] ^ i_data_b[DATA_W-1]) ? twos_complement(mult_out_round) : mult_out_round;
+wire [DATA_W-1:0]   comp_i_data_a  = twos_complement(i_data_a);
+wire [DATA_W-1:0]   comp_i_data_b  = twos_complement(i_data_b);
+wire [DATA_W-1:0]   mult_in_a      = (i_data_a[DATA_W-1]) ? comp_i_data_a : i_data_a;
+wire [DATA_W-1:0]   mult_in_b      = (i_data_b[DATA_W-1]) ? comp_i_data_b : i_data_b;
+wire [2*DATA_W-1:0] mult_full      = (mult_in_a * mult_in_b);
+// wire [DATA_W:0]     mult_shift     = mult_full [DATA_W + FRAC_W - 1 : FRAC_W - 1];
+// wire [DATA_W-1:0]   mult_out_round = mult_shift[DATA_W:1] + {{(DATA_W-1){1'b0}}, mult_shift[0]};
+wire [2*DATA_W-1:0] ab_reg_in      = (i_data_a[DATA_W-1] ^ i_data_b[DATA_W-1]) ? twos_complement32(mult_full) : mult_full;
 
-wire [DATA_W-1:0] data_acc_in    = add_out;
+wire        mac_mult_sign  = (a_reg[DATA_W-1] ^ b_reg[DATA_W-1]);
+wire [35:0] mac_add_in_a   = data_acc;
+wire [35:0] mac_add_in_b   = {{4{mac_mult_sign}}, ab_reg};
+wire        mac_sign_eq    = mac_add_in_a[35] == mac_add_in_b[35];
+wire [36:0] mac_sum        = mac_add_in_a + mac_add_in_b;
+wire        mac_overflow   = (mac_sum[36] ^ mac_sum[36 - 1]) && mac_sign_eq;
+wire [35:0] mac_add_out    = (!mac_overflow) ? mac_sum[35:0]
+                                             : (mac_add_in_a[35] ? MIN_VAL36 : MAX_VAL36);
+wire [35:0] data_acc_in    = mac_add_out;
+
+
+
+// data_acc_in overflow
+wire [35:0] comp_mac_add_out = twos_complement36(mac_add_out);
+wire        sign_mac_add_out = mac_add_out[35];
+wire [35:0] posvalue = sign_mac_add_out ? comp_mac_add_out : mac_add_out;
+wire [25:0] posvalue_rounded = posvalue[35:10] + {25'b0, posvalue[9]};
+wire [25:0] comp_posvalue_rounded = twos_complement26(posvalue_rounded);
+
+wire mac_add_out_overflow = (posvalue_rounded > MAX_VAL26);
+wire [DATA_W-1:0] mac_out = (!mac_add_out_overflow) ? (sign_mac_add_out ? comp_posvalue_rounded[15:0] : posvalue_rounded[15:0]) :
+                                                      (sign_mac_add_out ? MIN_VAL : MAX_VAL);
+
 //   b:1111110100100011
 //  ib:0000001011011101
 // abf:0000010010000110
@@ -130,6 +154,10 @@ wire [DATA_W-1:0] data_acc_in    = add_out;
 
 // GRAY
 // wire [DATA_W-1:0] axorb = a_reg ^ b_reg;
+
+/******************************************* ALU:LRCW ******************************************/
+
+
 
 /******************************************* ALU:ROT ******************************************/
 always @(posedge i_clk or negedge i_rst_n) begin
@@ -263,61 +291,6 @@ always @(*) begin
         trans_out[i*2 +: 2] = matrix_flat[(127-i*16) -: 2]; // 取每行第一列
     end
 end
-// reg [1:0] matrix [7:0][7:0];
-// wire trans_start = !o_busy && i_in_valid && i_inst == TRANS;
-
-// always @(posedge i_clk or negedge i_rst_n) begin
-//     if (!i_rst_n) begin
-//         for (integer i = 0; i < 8; i = i + 1) begin
-//             for (integer j = 0; j < 8; j = j + 1) begin
-//                 matrix[i][j] <= 2'b0;
-//             end
-//         end
-//     end
-//     else if (trans_start) begin
-//         for (integer i = 0; i < 7; i = i + 1) begin
-//             for (integer j = 0; j < 8; j = j + 1) begin
-//                 matrix[i][j] <= matrix[i+1][j];
-//             end
-//         end
-//         for (integer j = 0; j < 8; j = j + 1) begin
-//             matrix[7][j] <= i_data_a[j*2 +: 2]; 
-//         end
-//     end
-//     else if (o_busy) begin
-//         for (integer j = 0; j < 7; j = j + 1) begin
-//             for (integer i = 0; i < 8; i = i + 1) begin
-//                 matrix[i][j] <= matrix[i][j+1];
-//             end
-//         end
-//         for (integer j = 0; j < 8; j = j + 1) begin
-//             matrix[7][j] <= 2'b0;
-//         end
-//     end
-// end
-
-// always @(posedge i_clk or negedge i_rst_n) begin
-//     if (!i_rst_n) begin
-//         trans_count <= {4{1'b0}};
-//     end
-//     else if (is_final_trans_count) begin
-//         trans_count <= {4{1'b0}};
-//     end
-//     else if (trans_start) begin
-//         trans_count <= trans_count + 1'b1;
-//     end
-//     else if (o_busy) begin
-//         trans_count <= trans_count + 1'b1;
-//     end
-// end
-// // wire [DATA_W-1:0] trans_out = {matrix[0][0], matrix[1][0], matrix[2][0], matrix[3][0], matrix[4][0], matrix[5][0], matrix[6][0], matrix[7][0]};
-// reg [DATA_W-1:0] trans_out;
-// always @(*) begin
-//     for (integer i = 0; i < 8; i = i + 1) begin
-//         trans_out[i*2+:2] = matrix[i][0];
-//     end
-// end
-
 // input 1
 // 10 01 11 01 01 00 01 00
 // 10 01 11 10 11 01 10 10
@@ -361,17 +334,6 @@ end
 /******************************************* Control Logic ******************************************/
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        o_out_valid    <= 0;
-    end
-    else if (o_data_update) begin
-        o_out_valid    <= 1'b1;
-    end
-    else begin
-        o_out_valid    <= 1'b0;
-    end
-end 
-always @(posedge i_clk or negedge i_rst_n) begin
-    if (!i_rst_n) begin
         a_reg          <= 0;
         b_reg          <= 0;
         inst_reg_1     <= 0;
@@ -410,11 +372,9 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
 end
 
-
-
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        data_acc     <= 16'b0;
+        data_acc     <= 36'b0;
     end
     else if(data_acc_update) begin
         data_acc     <= data_acc_in;
@@ -426,13 +386,14 @@ end
 
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        ab_reg       <= 16'b0;
+        ab_reg       <= 32'b0;
     end
     else if(i_in_valid) begin
         ab_reg       <= ab_reg_in;
     end
 end
 
+/******************************************* Output Signal ******************************************/
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         o_data     <= 0;
@@ -442,7 +403,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
             o_data     <= add_out;
         end
         else if(inst_reg_1 == MAC) begin
-            o_data     <= data_acc_in;
+            o_data     <= mac_out;
         end
         else if(inst_reg_1 == SIN) begin
             o_data     <= add_out;
@@ -471,7 +432,17 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
 end
 
-/******************************************* Output Signal ******************************************/
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        o_out_valid    <= 0;
+    end
+    else if (o_data_update) begin
+        o_out_valid    <= 1'b1;
+    end
+    else begin
+        o_out_valid    <= 1'b0;
+    end
+end
 
 /******************************************* ALU Function ******************************************/
 // compute the two's complement of a signed number
@@ -479,6 +450,24 @@ function signed [DATA_W-1:0] twos_complement (
     input signed [DATA_W-1:0] in_data
 );
     twos_complement = ~in_data + 1;
+endfunction
+
+function signed [25:0] twos_complement26 (
+    input signed [25:0] in_data26
+);
+    twos_complement26 = ~in_data26 + 1;
+endfunction
+
+function signed [2*DATA_W-1:0] twos_complement32 (
+    input signed [2*DATA_W-1:0] in_data32
+);
+    twos_complement32 = ~in_data32 + 1;
+endfunction
+
+function signed [35:0] twos_complement36 (
+    input signed [35:0] in_data36
+);
+    twos_complement36 = ~in_data36 + 1;
 endfunction
 
 function [15:0] grp16;
