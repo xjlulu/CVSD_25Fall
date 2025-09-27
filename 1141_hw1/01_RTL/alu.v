@@ -37,10 +37,10 @@ parameter MIN_VAL36 = {1'b1, {35{1'b0}}};
 parameter FINAL_TRANS_COUNT  = 8;
 parameter CNT_W  = 4;
 // Q6.10 format constants for fractional values
-parameter CONST_HALF       = 16'b000000_100000000000; // 1/2 = 0.5 in Q6.10
-parameter CONST_ONE_THIRD  = 16'b000000_010101010101; // 1/3 ≈ 0.3333 in Q6.10
-parameter CONST_ONE_FOURTH = 16'b000000_010000000000; // 1/4 = 0.25 in Q6.10
-parameter CONST_ONE_FIFTH  = 16'b000000_001100110011; // 1/5 ≈ 0.2 in Q6.10
+parameter [DATA_W+9:0] CONST_FRAC_2 = 26'b000000_10000000000000000000; // 1/2 = 0.5 (Q6.10)
+parameter [DATA_W+9:0] CONST_FRAC_3 = 26'b000000_01010101010000000000; // 1/3 ≈ 0.3333 (Q6.10)
+parameter [DATA_W+9:0] CONST_FRAC_4 = 26'b000000_01000000000000000000; // 1/4 = 0.25 (Q6.10)
+parameter [DATA_W+9:0] CONST_FRAC_5 = 26'b000000_00110011000000000000; // 1/5 ≈ 0.2 (Q6.10)
 
 /******************************************* Internal Signals ****************************************/
 reg                 in_valid_reg;
@@ -55,6 +55,7 @@ reg  [CNT_W-1:0]    trans_count;
 wire [DATA_W-1:0]   lrcw_out;
 reg  [DATA_W-1:0]   rot_out;
 
+wire is_final_sin_count     = (sin_count == 3'd5) && (inst_reg_1 == SIN);
 wire is_final_lrcw_count    = ((lrcw_count == 4'd15) || (a_reg == 16'd0) || (a_reg == {16{1'b1}})) && (inst_reg_1 == LRCW);
 wire is_final_rot_count     = ((rot_count == b_reg[CNT_W-1:0]) || (b_reg[CNT_W-1:0] == 4'd0)) && (inst_reg_1 == ROT);
 wire is_final_clz_count     = ((a_reg[15-clz_count] == 1'b1) || (clz_count == 4'd14) || (a_reg[DATA_W-1:0] == 16'd0)) && (inst_reg_1 == CLZ);
@@ -63,22 +64,27 @@ wire is_final_trans_count   = trans_count == FINAL_TRANS_COUNT;
 wire trans_ready            = i_inst == TRANS && i_in_valid && is_finalm1_trans_count && !o_busy;
 wire o_data_update_add      = (inst_reg_1 == ADD  || inst_reg_1 == SUB) && in_valid_reg;
 wire o_data_update_mac      = (inst_reg_1 == MAC  ) && in_valid_reg;
+wire o_data_update_sin      = (inst_reg_1 == SIN  ) && (is_final_sin_count && o_busy);
 wire o_data_update_gray     = (inst_reg_1 == GRAY ) && in_valid_reg;
 wire o_data_update_rm4      = (inst_reg_1 == RM4  ) && in_valid_reg;
 wire o_data_update_lrcw     = (inst_reg_1 == LRCW ) && (is_final_lrcw_count && o_busy);
 wire o_data_update_rot      = (inst_reg_1 == ROT  ) && (is_final_rot_count  && o_busy);
 wire o_data_update_clz      = (inst_reg_1 == CLZ  ) && (is_final_clz_count  && o_busy);
 wire o_data_update_trans    = (inst_reg_2 == TRANS) && !is_final_trans_count && o_busy;
-wire o_data_update          = o_data_update_add || o_data_update_mac || o_data_update_gray || o_data_update_rm4 || o_data_update_lrcw || o_data_update_rot || o_data_update_clz || o_data_update_trans;
+wire o_data_update          = o_data_update_add || o_data_update_mac || o_data_update_sin || o_data_update_gray || o_data_update_rm4 || o_data_update_lrcw || o_data_update_rot || o_data_update_clz || o_data_update_trans;
+wire sin_start              = !o_busy && i_in_valid && (i_inst == SIN  );
 wire lrcw_start             = !o_busy && i_in_valid && (i_inst == LRCW );
 wire rot_start              = !o_busy && i_in_valid && (i_inst == ROT  );
 wire clz_start              = !o_busy && i_in_valid && (i_inst == CLZ  );
 wire trans_start            = !o_busy && i_in_valid && (i_inst == TRANS);
+wire busy_start             = sin_start || lrcw_start || rot_start || clz_start || trans_ready;
 wire matrix_out_update      =  o_busy && (inst_reg_2 == TRANS);
+wire sin_done               = is_final_sin_count;
 wire lrcw_done              = is_final_lrcw_count;
 wire rot_done               = is_final_rot_count;
 wire clz_done               = is_final_clz_count;
 wire trans_done             = is_final_trans_count && o_busy;
+wire busy_done              = sin_done || lrcw_done || rot_done || clz_done || trans_done;
 wire data_acc_update        = o_data_update_mac;
 
 /******************************************* ALU core ***********************************************/
@@ -169,6 +175,133 @@ wire [DATA_W-1:0] mac_out = (!mac_add_out_overflow) ? (sign_mac_add_out ? comp_p
 /******************************************* ALU:SIN ******************************************/
 // I1: 1111111110001000
 // G1: 1111111110001000
+// I2: 1111111011111100
+// G2: 1111111011111111
+reg signed [2*DATA_W-1:0] sin_out_reg;
+reg signed [2*DATA_W-1:0] a_power_reg;
+reg [2:0] sin_count;
+
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        sin_count   <= 3'b0;
+    end
+    else if (is_final_sin_count) begin
+        sin_count   <= 3'b0;
+    end
+    else if (sin_start) begin
+        sin_count   <= 3'b0;
+    end
+    else if (o_busy) begin
+        sin_count   <= sin_count + 1'b1;
+    end
+end
+
+
+wire [2*DATA_W-1:0] sin_a_init = i_data_a[15] ? {6'b0, twos_complement(i_data_a), 10'b0} : {6'b0, i_data_a, 10'b0};
+wire [2*DATA_W-1:0] sin_a_reg  = a_reg[15]    ? {6'b0, twos_complement(a_reg   ), 10'b0} : {6'b0, a_reg   , 10'b0};
+wire [4*DATA_W-1:0] a_power_reg_mult_full    = a_power_reg * sin_a_reg;
+wire [2*DATA_W-1:0] a_power_reg_mult_shifted = a_power_reg_mult_full[51:20];
+wire [4*DATA_W-1:0] a_power_reg_in_frac2     = a_power_reg_mult_shifted * CONST_FRAC_2;
+wire [4*DATA_W-1:0] a_power_reg_in_frac3     = a_power_reg_mult_shifted * CONST_FRAC_3;
+wire [4*DATA_W-1:0] a_power_reg_in_frac4     = a_power_reg_mult_shifted * CONST_FRAC_4;
+wire [4*DATA_W-1:0] a_power_reg_in_frac5     = a_power_reg_mult_shifted * CONST_FRAC_5;
+wire [2*DATA_W-1:0] a_power_reg_in_2         = a_power_reg_in_frac2[51:20];
+wire [2*DATA_W-1:0] a_power_reg_in_3         = a_power_reg_in_frac3[51:20];
+wire [2*DATA_W-1:0] a_power_reg_in_4         = a_power_reg_in_frac4[51:20];
+wire [2*DATA_W-1:0] a_power_reg_in_5         = a_power_reg_in_frac5[51:20];
+// wire [2*DATA_W-1:0] a_power_reg_in_2     = div_by_2(a_power_reg_mult_shifted);
+// wire [2*DATA_W-1:0] a_power_reg_in_3     = div_by_3(a_power_reg_mult_shifted);
+// wire [2*DATA_W-1:0] a_power_reg_in_4     = div_by_4(a_power_reg_mult_shifted);
+// wire [2*DATA_W-1:0] a_power_reg_in_5     = div_by_5(a_power_reg_mult_shifted);
+
+// // Function to approximate division by 2 for 32-bit input
+// function [31:0] div_by_2;
+//     input [31:0] in_data;
+// begin
+//     div_by_2 = in_data >> 1;
+// end
+// endfunction
+
+// // Function to approximate division by 3 for 32-bit input
+// function [31:0] div_by_3;
+//     input [31:0] in_data;
+//     reg [31:0] Q1;
+//     reg [31:0] Q2;
+//     reg [31:0] Q3;
+//     reg [31:0] Q4;
+// begin
+//     Q1 = ((in_data >> 2) + in_data) >> 2; // Q = A*0.0101
+//     Q2 = (Q1 + in_data) >> 1;              // Q = A*0.10101
+//     Q3 = ((Q2 >> 6) + Q2);                  // Q = A*0.10101010101
+//     Q4 = ((Q3 >> 12) + Q3) >> 1;            // Q = A*0.01010101010101010...
+//     div_by_3 = Q4;
+// end
+// endfunction
+
+// // Function to approximate division by 4 for 32-bit input
+// function [31:0] div_by_4;
+//     input [31:0] in_data;
+// begin
+//     div_by_4 = in_data >> 2;
+// end
+// endfunction
+
+// // Function to approximate division by 5 for 32-bit input
+// function [31:0] div_by_5;
+//     input [31:0] in_data;
+//     reg [31:0] Q1;
+//     reg [31:0] Q2;
+//     reg [31:0] Q3;
+// begin
+//     Q1 = (in_data >> 1) + in_data;      // Q = A*0.11
+//     Q2 =  (Q1 >> 4) + Q1;                  // Q = A*0.110011
+//     Q3 = ((Q2 >> 8) + Q2) >> 2;           // Q = A*0.0011001100110011
+//     div_by_5 = Q3;
+// end
+// endfunction
+
+
+// wire [2*DATA_W-1:0] a_power_reg_in = (a_power_reg * sin_a_reg >> 2*FRAC_W);
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        a_power_reg   <= {2*DATA_W{1'b0}};
+    end
+    else if (sin_start) begin
+        a_power_reg <= sin_a_init;
+    end
+    else if (o_busy && sin_count == 3'd0) begin
+        a_power_reg <= a_power_reg_in_2;
+    end
+    else if (o_busy && sin_count == 3'd1) begin
+        a_power_reg <= a_power_reg_in_3;
+    end
+    else if (o_busy && sin_count == 3'd2) begin
+        a_power_reg <= a_power_reg_in_4;
+    end
+    else if (o_busy && sin_count == 3'd3) begin
+        a_power_reg <= a_power_reg_in_5;
+    end
+end
+
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        sin_out_reg   <= {(2*DATA_W){1'b0}};
+    end
+    else if (sin_start) begin
+        sin_out_reg <= sin_a_init;
+    end
+    else if (sin_count == 3'd2) begin
+        sin_out_reg <= sin_out_reg + twos_complement32(a_power_reg);
+    end
+    else if (sin_count == 3'd4) begin
+        sin_out_reg <= sin_out_reg + a_power_reg;
+    end
+end
+
+wire [2*DATA_W-11:0] sin_out_reg_round = sin_out_reg[31:10] + {21'b0, sin_out_reg[9]};
+wire sin_overflow = |sin_out_reg[31:26];
+wire [DATA_W-1:0] sin_out = (!sin_overflow) ? (a_reg[15] ? twos_complement(sin_out_reg_round[DATA_W-1:0]) : sin_out_reg_round[DATA_W-1:0]) :
+                                              (a_reg[15] ? MIN_VAL : MAX_VAL);
 
 
 
@@ -206,7 +339,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
     else if (lrcw_start) begin
         lrcw_count <= {CNT_W{1'b0}};
     end
-    else if (o_busy) begin
+    else if (o_busy && inst_reg_1 == LRCW) begin
         lrcw_count <= lrcw_count + 1'b1;
     end
 end
@@ -235,7 +368,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
     else if (rot_start) begin
         rot_count <= {CNT_W{1'b0}};
     end
-    else if (o_busy) begin
+    else if (o_busy && inst_reg_1 == ROT) begin
         rot_count <= rot_count + 1'b1;
     end
 end
@@ -251,7 +384,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
     else if (clz_start) begin
         clz_count <= {CNT_W{1'b0}};
     end
-    else if (o_busy) begin
+    else if (o_busy && inst_reg_1 == CLZ) begin
         clz_count <= clz_count + 1'b1;
     end
 end
@@ -444,7 +577,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
             o_data     <= mac_out;
         end
         else if(inst_reg_1 == SIN) begin
-            o_data     <= add_out;
+            o_data     <= sin_out;
         end
         else if(inst_reg_1 == GRAY) begin
             o_data     <= gray_out;
@@ -486,10 +619,10 @@ always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         o_busy <= 1'b0;
     end
-    else if (lrcw_start || rot_start || clz_start || trans_ready) begin
+    else if (busy_start) begin
         o_busy <= 1'b1;
     end
-    else if (lrcw_done || rot_done || clz_done || trans_done) begin
+    else if (busy_done) begin
         o_busy <= 1'b0;
     end
 end
