@@ -34,29 +34,43 @@ parameter FINAL_TRANS_COUNT  = 8;
 parameter CNT_W  = 4;
 
 /******************************************* Internal Signals ****************************************/
-reg                       in_valid_reg;
-reg  [INST_W-1:0]         inst_reg_1, inst_reg_2;
-reg  [DATA_W-1:0]         a_reg, b_reg, ab_reg, data_acc;
-reg [CNT_W-1:0] rot_count;
-reg [3:0] trans_count;
-reg [DATA_W-1:0] rot_out;
+reg                 in_valid_reg;
+reg [INST_W-1:0]    inst_reg_1, inst_reg_2;
+reg [DATA_W-1:0]    a_reg, b_reg, ab_reg, data_acc;
+reg [CNT_W-1:0]     rot_count;
+reg [CNT_W-1:0]     clz_count;
+reg [CNT_W-1:0]     trans_count;
+reg [DATA_W-1:0]    rot_out;
 
-wire data_acc_update        = (inst_reg_1 == MAC) && in_valid_reg;
-wire is_final_rot_count     = ((rot_count == b_reg[CNT_W-1:0]) || (b_reg[CNT_W:0] == 5'd16)) && (inst_reg_1 == ROT);
+wire is_final_rot_count     = ((rot_count == b_reg[CNT_W-1:0]) || (b_reg[CNT_W-1:0] == 4'd0)) && (inst_reg_1 == ROT);
+wire is_final_clz_count     = ((a_reg[15-clz_count] == 1'b1) || (clz_count == 4'd15) || (a_reg[DATA_W-1:0] == 16'd0)) && (inst_reg_1 == CLZ);
 wire is_finalm1_trans_count = trans_count == FINAL_TRANS_COUNT - 1;
 wire is_final_trans_count   = trans_count == FINAL_TRANS_COUNT;
 wire trans_ready            = i_inst == TRANS && i_in_valid && is_finalm1_trans_count && !o_busy;
-wire o_data_update_rot      = (inst_reg_1 == ROT  ) && ((is_final_rot_count  ) || !o_busy);
+wire o_data_update_add      = (inst_reg_1 == ADD  || inst_reg_1 == SUB) && in_valid_reg;
+wire o_data_update_mac      = (inst_reg_1 == MAC  ) && in_valid_reg;
+wire o_data_update_gray     = (inst_reg_1 == GRAY ) && in_valid_reg;
+wire o_data_update_rm4      = (inst_reg_1 == RM4  ) && in_valid_reg;
+wire o_data_update_rot      = (inst_reg_1 == ROT  ) && (is_final_rot_count && o_busy);
+wire o_data_update_clz      = (inst_reg_1 == CLZ  ) && (is_final_clz_count && o_busy);
 wire o_data_update_trans    = (inst_reg_2 == TRANS) && !is_final_trans_count && o_busy;
-wire o_data_update          = o_data_update_trans || o_data_update_rot;
+wire o_data_update          = o_data_update_add || o_data_update_mac || o_data_update_gray || o_data_update_rm4 || o_data_update_rot || o_data_update_clz || o_data_update_trans;
+wire rot_start              = !o_busy && i_in_valid && (i_inst == ROT  );
+wire clz_start              = !o_busy && i_in_valid && (i_inst == CLZ  );
+wire trans_start            = !o_busy && i_in_valid && (i_inst == TRANS);
+wire matrix_out_update      =  o_busy && (inst_reg_2 == TRANS);
+wire rot_done               = is_final_rot_count;
+wire clz_done               = is_final_clz_count;
+wire trans_done             = is_final_trans_count && o_busy;
+wire data_acc_update        = o_data_update_mac;
 
 /******************************************* ALU core ***********************************************/
 
 /******************************************* ALU core ***********************************************/
-wire [DATA_W-1:0]   add_in_a = (inst_reg_1 == MAC) ? data_acc : a_reg;
-wire [DATA_W-1:0]   add_in_b = (inst_reg_1 == SUB) ? twos_complement(b_reg) :
-                               (inst_reg_1 == MAC) ? ab_reg :
-                                                     b_reg  ;
+wire [DATA_W-1:0]   add_in_a = a_reg;
+wire [DATA_W-1:0]   macadd_in_a = data_acc;
+wire [DATA_W-1:0]   add_in_b = (inst_reg_1 == SUB) ? twos_complement(b_reg) : b_reg;
+wire [DATA_W-1:0]   macadd_in_b = ab_reg;
 
 wire                a_sign   = add_in_a[DATA_W-1];
 wire                b_sign   = add_in_b[DATA_W-1];
@@ -71,12 +85,18 @@ wire [DATA_W-1:0] comp_i_data_a  = twos_complement(i_data_a);
 wire [DATA_W-1:0] comp_i_data_b  = twos_complement(i_data_b);
 wire [DATA_W-1:0] mult_in_a      = (i_data_a[DATA_W-1]) ? comp_i_data_a : i_data_a;
 wire [DATA_W-1:0] mult_in_b      = (i_data_b[DATA_W-1]) ? comp_i_data_b : i_data_b;
-wire [DATA_W:0]   mult_full      = (mult_in_a * mult_in_b) >> (FRAC_W-1);
-wire [DATA_W-1:0] mult_out_round = mult_full[DATA_W:1] + {{(DATA_W-1){1'b0}}, mult_full[0]};
+wire [2*DATA_W-1:0] mult_full    = (mult_in_a * mult_in_b);
+wire [DATA_W:0]   mult_shift     = mult_full [DATA_W + FRAC_W - 1 : FRAC_W - 1];
+wire [DATA_W-1:0] mult_out_round = mult_shift[DATA_W:1] + {{(DATA_W-1){1'b0}}, mult_shift[0]};
 wire [DATA_W-1:0] ab_reg_in      = (i_data_a[DATA_W-1] ^ i_data_b[DATA_W-1]) ? twos_complement(mult_out_round) : mult_out_round;
 
 wire [DATA_W-1:0] data_acc_in    = add_out;
-
+//   b:1111110100100011
+//  ib:0000001011011101
+// abf:0000010010000110
+//  ab:00000100100001100011001010
+// iab:11111011011110011100110101
+// 1111101101111010
 // I1:  0000011001010010 1111110100100011
 // g1:  1111101101111010
 // g0:  
@@ -112,15 +132,14 @@ wire [DATA_W-1:0] data_acc_in    = add_out;
 // wire [DATA_W-1:0] axorb = a_reg ^ b_reg;
 
 /******************************************* ALU:ROT ******************************************/
-wire rot_start = !o_busy && i_in_valid && (i_inst == ROT);
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         o_busy <= 1'b0;
     end
-    else if (rot_start || trans_ready) begin
+    else if (rot_start || clz_start || trans_ready) begin
         o_busy <= 1'b1;
     end
-    else if (is_final_rot_count || (is_final_trans_count && o_busy)) begin
+    else if (rot_done || clz_done || trans_done) begin
         o_busy <= 1'b0;
     end
 end
@@ -151,6 +170,26 @@ always @(posedge i_clk or negedge i_rst_n) begin
         rot_count <= rot_count + 1'b1;
     end
 end
+
+/******************************************* ALU:CLZ ******************************************/
+always @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+        clz_count <= {CNT_W{1'b0}};
+    end
+    else if (is_final_clz_count) begin
+        clz_count <= {CNT_W{1'b0}};
+    end
+    else if (clz_start) begin
+        clz_count <= {CNT_W{1'b0}};
+    end
+    else if (o_busy) begin
+        clz_count <= clz_count + 1'b1;
+    end
+end
+
+
+wire [DATA_W-1:0] clz_out = (a_reg == 16'b0) ? 16'd16 : {{(DATA_W-CNT_W){1'b0}}, clz_count};
+
 /******************************************* ALU:GRAY ******************************************/
 reg [DATA_W-1:0] gray_out;
 always @(*) begin
@@ -177,8 +216,6 @@ wire [DATA_W-1:0] lrcw_out = grp16(a_reg, b_reg);
 // 將原 matrix 改為單一 reg
 reg [127:0] matrix_flat; // 64*2 = 128 bits
 
-wire trans_start = !o_busy && i_in_valid && i_inst == TRANS && (!is_final_trans_count || (is_final_trans_count && o_busy));
-wire matrix_out_update = (inst_reg_2 == TRANS && o_busy) || (inst_reg_1 == TRANS && is_final_trans_count && !o_busy);
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         matrix_flat <= 128'b0;
@@ -214,7 +251,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
     else if (trans_start) begin
         trans_count <= trans_count + 1'b1;
     end
-    else if (o_busy && !is_final_trans_count) begin
+    else if (o_busy && !is_final_trans_count && inst_reg_2 == TRANS) begin
         trans_count <= trans_count + 1'b1;
     end
 end
@@ -324,19 +361,13 @@ end
 /******************************************* Control Logic ******************************************/
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-        o_out_valid <= 0;
+        o_out_valid    <= 0;
+    end
+    else if (o_data_update) begin
+        o_out_valid    <= 1'b1;
     end
     else begin
-        // if (inst_reg_1 == TRANS && !o_busy && is_final_trans_count) begin
-        //     o_out_valid      <= 1'b1;
-        // end
-        // else 
-        if (o_data_update) begin
-            o_out_valid      <= 1'b1;
-        end
-        else begin
-            o_out_valid      <= 1'b0;
-        end
+        o_out_valid    <= 1'b0;
     end
 end 
 always @(posedge i_clk or negedge i_rst_n) begin
@@ -344,7 +375,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
         a_reg          <= 0;
         b_reg          <= 0;
         inst_reg_1     <= 0;
-        in_valid_reg <= 0;
+        in_valid_reg   <= 0;
     end
     else begin
         if (!o_busy) begin
@@ -352,9 +383,6 @@ always @(posedge i_clk or negedge i_rst_n) begin
         end
         else if (o_data_update) begin
             in_valid_reg     <= i_in_valid;
-        end
-        else begin
-            o_out_valid      <= 1'b0;
         end
 
         if (o_busy) begin
@@ -370,9 +398,9 @@ always @(posedge i_clk or negedge i_rst_n) begin
         if (o_busy) begin
             inst_reg_2   <= inst_reg_2;
         end
-        // else if (inst_reg_2 == TRANS && !o_busy && is_final_trans_count) begin
-        //     inst_reg_2   <= inst_reg_2;
-        // end
+        else if (trans_ready) begin
+            inst_reg_2   <= i_inst;
+        end
         else if (!o_busy && in_valid_reg) begin
             inst_reg_2   <= inst_reg_1;
         end
@@ -429,7 +457,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
             o_data     <= rot_out;
         end
         else if(inst_reg_1 == CLZ) begin
-            o_data     <= add_out;
+            o_data     <= clz_out;
         end
         else if(inst_reg_1 == RM4) begin
             o_data     <= rm4_out;
