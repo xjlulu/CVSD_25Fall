@@ -177,6 +177,39 @@ wire [DATA_W-1:0] mac_out = (!mac_add_out_overflow) ? (sign_mac_add_out ? comp_p
 // G1: 1111111110001000
 // I2: 1111111011111100
 // G2: 1111111011111111
+
+
+//  I28                 : 111111 1000011111
+// iI28                 : 000000 0111100001
+// iI28^2               : 000000000000 00111000011111000001
+// iI28^2/2             :     000000000000 000111000011111000001
+// iI28^3/2             :                                   000 0000110101000100001000110100001
+// 1/3                  :                           0 0101010101
+// iI28^3/2/3           :                             00000100011010101111000010111101101110101
+// iI28^4/2/3           :                 0 000000100001001100111011100101010001111011011010101
+// iI28^4/2/3/4         :                 0 00000000100001001100111011100101010001111011011010101
+// iI28                 :  000000 0111100001
+// 1/5                  :  000000_0011001100
+// iI28^5/2/3/4         :                 0 000000000011111001100010001011110011001011101111100011000110101
+// iI28^5/2/3/4/5       :       0 0000000000001100011011011000111101100111001001011011100011111001000111100
+//  G28   : 111111 1111000101
+// iG28   : 000000 0000111011
+
+// iI28^3/2/3           :  000000 0000010001 1010101111000010111101101110101
+// iI28                 :  000000 0111100001
+//  I28^3/2/3           :  111111 1111101110 0101010000111101000010010001011
+//                        1000000 0111001111 0101010000111101000010010001011
+// iI28^5/2/3/4/5       :  000000 0000000000 001100011011011000111101100111001001011011100011111001000111100
+//                      :  000000 0111001111 100001011
+//                      :  000000 0111010000
+//                  inv :  111111 1000110000
+
+//                        1000000 0111001111 0101010000111101000010010001011
+// iI28^5/2/3/4/5       :  000000 0000000000 001100011011011000111101100111001001011011100011111001000111100
+//                  test:  000000 0111001111
+//                 itest:  111111 1000110001
+// 1111111000110001
+// [ERROR  ]   [28] Your Result:1111111000110000 Golden:1111111000110001
 reg signed [2*DATA_W-1:0] sin_out_reg;
 reg signed [2*DATA_W-1:0] a_power_reg;
 reg [2:0] sin_count;
@@ -197,6 +230,13 @@ always @(posedge i_clk or negedge i_rst_n) begin
 end
 
 
+// function [31:0] round_a_power_reg;
+//     input [31:0] in_data;
+// begin
+//     round_a_power_reg = {in_data[31:10], 10'b0} + {21'b0, in_data[9], 10'b0};
+// end
+// endfunction
+
 wire [2*DATA_W-1:0] sin_a_init = i_data_a[15] ? {6'b0, twos_complement(i_data_a), 10'b0} : {6'b0, i_data_a, 10'b0};
 wire [2*DATA_W-1:0] sin_a_reg  = a_reg[15]    ? {6'b0, twos_complement(a_reg   ), 10'b0} : {6'b0, a_reg   , 10'b0};
 wire [4*DATA_W-1:0] a_power_reg_mult_full    = a_power_reg * sin_a_reg;
@@ -205,10 +245,18 @@ wire [4*DATA_W-1:0] a_power_reg_in_frac2     = a_power_reg_mult_shifted * CONST_
 wire [4*DATA_W-1:0] a_power_reg_in_frac3     = a_power_reg_mult_shifted * CONST_FRAC_3;
 wire [4*DATA_W-1:0] a_power_reg_in_frac4     = a_power_reg_mult_shifted * CONST_FRAC_4;
 wire [4*DATA_W-1:0] a_power_reg_in_frac5     = a_power_reg_mult_shifted * CONST_FRAC_5;
+// wire [2*DATA_W-1:0] a_power_reg_in_2         = round_a_power_reg(a_power_reg_in_frac2[51:20]);
+// wire [2*DATA_W-1:0] a_power_reg_in_3         = round_a_power_reg(a_power_reg_in_frac3[51:20]);
+// wire [2*DATA_W-1:0] a_power_reg_in_4         = round_a_power_reg(a_power_reg_in_frac4[51:20]);
+// wire [2*DATA_W-1:0] a_power_reg_in_5         = round_a_power_reg(a_power_reg_in_frac5[51:20]);
+
+
 wire [2*DATA_W-1:0] a_power_reg_in_2         = a_power_reg_in_frac2[51:20];
 wire [2*DATA_W-1:0] a_power_reg_in_3         = a_power_reg_in_frac3[51:20];
 wire [2*DATA_W-1:0] a_power_reg_in_4         = a_power_reg_in_frac4[51:20];
 wire [2*DATA_W-1:0] a_power_reg_in_5         = a_power_reg_in_frac5[51:20];
+
+
 // wire [2*DATA_W-1:0] a_power_reg_in_2     = div_by_2(a_power_reg_mult_shifted);
 // wire [2*DATA_W-1:0] a_power_reg_in_3     = div_by_3(a_power_reg_mult_shifted);
 // wire [2*DATA_W-1:0] a_power_reg_in_4     = div_by_4(a_power_reg_mult_shifted);
@@ -283,6 +331,10 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
 end
 
+// wire [31:0] a_power_reg_round = {a_power_reg[31:10], 10'b0} + {21'b0, a_power_reg[9] ,10'b0};
+// wire [31:0] a_power_reg32 = twos_complement32(a_power_reg_round);
+
+wire [31:0] a_power5 = {a_power_reg[31:10], 10'b0} + {21'b0, a_power_reg[9] ,10'b0};
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
         sin_out_reg   <= {(2*DATA_W){1'b0}};
@@ -292,9 +344,12 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
     else if (sin_count == 3'd2) begin
         sin_out_reg <= sin_out_reg + twos_complement32(a_power_reg);
+        // sin_out_reg <= sin_out_reg + {a_power_reg32[31:1], {1{1'b1}}};
     end
     else if (sin_count == 3'd4) begin
         sin_out_reg <= sin_out_reg + a_power_reg;
+        // sin_out_reg <= sin_out_reg + {a_power_reg[31:1], 1'b0};
+        // sin_out_reg <= sin_out_reg + a_power_reg_round;
     end
 end
 
