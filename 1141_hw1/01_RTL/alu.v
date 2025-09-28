@@ -43,11 +43,14 @@ parameter [DATA_W+9:0] CONST_FRAC_4 = 26'b000000_01000000000000000000; // 1/4 = 
 parameter [DATA_W+9:0] CONST_FRAC_5 = 26'b000000_00110011000000000000; // 1/5 ≈ 0.2 (Q6.10)
 
 /******************************************* Internal Signals ****************************************/
+integer i;
+
 reg                 in_valid_reg;
 reg  [INST_W-1:0]   inst_reg_1, inst_reg_2;
 reg  [DATA_W-1:0]   a_reg, b_reg;
 reg  [2*DATA_W-1:0] ab_reg;
 reg  [35:0]         data_acc;
+reg  [2:0]          sin_count;
 reg  [CNT_W-1:0]    lrcw_count;
 reg  [CNT_W-1:0]    rot_count;
 reg  [CNT_W-1:0]    clz_count;
@@ -212,7 +215,7 @@ wire [DATA_W-1:0] mac_out = (!mac_add_out_overflow) ? (sign_mac_add_out ? comp_p
 // [ERROR  ]   [28] Your Result:1111111000110000 Golden:1111111000110001
 reg signed [2*DATA_W-1:0] sin_out_reg;
 reg signed [2*DATA_W-1:0] a_power_reg;
-reg [2:0] sin_count;
+
 
 always @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
@@ -450,7 +453,7 @@ wire [DATA_W-1:0] clz_out = (a_reg == 16'b0) ? 16'd16 : {{(DATA_W-CNT_W){1'b0}},
 /******************************************* ALU:GRAY ******************************************/
 reg [DATA_W-1:0] gray_out;
 always @(*) begin
-    for (integer i = 0; i < DATA_W-1; i = i + 1) begin
+    for (i = 0; i < DATA_W-1; i = i + 1) begin
         gray_out[i] = a_reg[i+1] ^ a_reg[i];
     end
     gray_out[DATA_W-1] = a_reg[DATA_W-1];
@@ -460,7 +463,7 @@ end
 // I8
 reg [DATA_W-1:0] rm4_out;
 always @(*) begin
-    for (integer i = 0; i < 13; i = i + 1) begin
+    for (i = 0; i < 13; i = i + 1) begin
         rm4_out[i] = (a_reg[i+:4] == b_reg[15-i-:4]);
     end
     rm4_out[15:13] = 3'b0;
@@ -478,13 +481,13 @@ always @(posedge i_clk or negedge i_rst_n) begin
         // shift up 每行 16 bits
         matrix_flat[0 +: 112] <= matrix_flat[16 +: 112]; // 上移 1 行
         // load new row 到最後一行
-        for (integer j = 0; j < 8; j = j + 1) begin
-            matrix_flat[112 + j*2 +: 2] <= i_data_a[j*2 +: 2];
+        for (i = 0; i < 8; i = i + 1) begin
+            matrix_flat[112 + i*2 +: 2] <= i_data_a[i*2 +: 2];
         end
     end
     else if (matrix_out_update) begin
         // shift left 每列 2 bits
-        for (integer i = 0; i < 8; i = i + 1) begin
+        for (i = 0; i < 8; i = i + 1) begin
             matrix_flat[i*16 + 2 +: 14] <= matrix_flat[i*16 +: 14]; // 左移 1 列
             matrix_flat[i*16 +: 2] <= 2'b0; // 清最後一列
         end
@@ -513,7 +516,9 @@ end
 // 組合輸出
 reg [DATA_W-1:0] trans_out;
 always @(*) begin
-    for (integer i = 0; i < 8; i = i + 1) begin
+    // for (int i5 = 0; i5 < 8; i5 = i5 + 1) begin
+    //     trans_out[i5*2 +: 2] = matrix_flat[(127-i5*16) -: 2]; // 取每行第一列
+    for (i = 0; i < 8; i = i + 1) begin
         trans_out[i*2 +: 2] = matrix_flat[(127-i*16) -: 2]; // 取每行第一列
     end
 end
