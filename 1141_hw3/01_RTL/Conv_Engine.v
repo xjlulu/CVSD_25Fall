@@ -154,7 +154,7 @@ module Conv_Engine (
     end
 
     always @(*) begin
-            // Q0.7 → 四捨五入後右移 7，無號 0~255 飽和
+        // Q0.7 → 四捨五入後右移 7，無號 0~255 飽和
         // acc_round <= acc + $signed(24'sd1 <<< (FRAC_BITS-1));
         acc_round = acc + HALF_LSB;
         acc_shift = acc_round >>> FRAC_BITS;
@@ -195,9 +195,6 @@ module Conv_Engine (
             o_out_valid1 <= 1'b0;
             o_done       <= 1'b0;
 
-            acc_round    <= 24'sd0;
-            acc_shift    <= 24'sd0;
-            clip_u       <= 9'sd0;
         end else begin
             state        <= nstate;
 
