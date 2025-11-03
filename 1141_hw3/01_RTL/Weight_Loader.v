@@ -49,7 +49,8 @@ module Weight_Loader (
             o_done    <= 1'b0;
             w_bus     <= 72'd0;
             o_weights <= 72'd0;
-        end else begin
+        end
+        else begin
             state     <= nstate;
 
             // 預設值（每拍都重置，再由各狀態覆寫）
@@ -59,13 +60,8 @@ module Weight_Loader (
             case (state)
                 S_IDLE: begin
                     pack_cnt <= 2'd0;
-                    w_bus    <= 72'd0;
                     if (i_start) o_w_ready <= 1'b1;
-                    // 第 1 筆 32-bit -> w0..w3
-                    w_bus[71:64] <= i_w_data[31:24]; // w0
-                    w_bus[63:56] <= i_w_data[23:16]; // w1
-                    w_bus[55:48] <= i_w_data[15: 8]; // w2
-                    w_bus[47:40] <= i_w_data[ 7: 0]; // w3
+                    w_bus <= {i_w_data[31:0], 40'b0}; // w0 ~w3
                 end
 
                 S_LOAD: begin
@@ -74,10 +70,7 @@ module Weight_Loader (
                         case (pack_cnt)
                             2'd0: begin
                                 // 第 2 筆 32-bit -> w4..w7
-                                w_bus[39:32] <= i_w_data[31:24]; // w4
-                                w_bus[31:24] <= i_w_data[23:16]; // w5
-                                w_bus[23:16] <= i_w_data[15: 8]; // w6
-                                w_bus[15: 8] <= i_w_data[ 7: 0]; // w7
+                                w_bus[39: 8] <= i_w_data[31: 0]; // w4~w7
                             end
                             2'd1: begin
                                 // 第 3 筆 32-bit -> 只取最高位元組作為 w8

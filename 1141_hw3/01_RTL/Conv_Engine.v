@@ -7,7 +7,6 @@ module Conv_Engine (
     input         i_start,
 
     // 參數
-    input  [7:0]  i_kernel_size,     // 固定 3
     input  [7:0]  i_stride_size,     // 1 或 2
     input  [7:0]  i_dilation_size,   // 1 或 2
 
@@ -50,6 +49,8 @@ module Conv_Engine (
     localparam S_RUN   = 3'd2;  // ★ 一拍發位址 + 同步上一拍 MAC
     localparam S_WRITE = 3'd3;
     localparam S_DONE  = 3'd4;
+
+    localparam signed [23:0] HALF_LSB = 24'sd1 <<< (FRAC_BITS-1);
 
     reg [2:0] state, nstate;
 
@@ -126,7 +127,12 @@ module Conv_Engine (
         endcase
     end
     always @(posedge i_clk or negedge i_rst_n) begin
-        w_t <= next_w_t;
+        if (!i_rst_n) begin
+            w_t <= 8'd0;
+        end
+        else begin
+            w_t <= next_w_t;
+        end
     end
 
     // next-state
@@ -145,6 +151,17 @@ module Conv_Engine (
             S_DONE : nstate = S_DONE;
             default: nstate = S_IDLE;
         endcase
+    end
+
+    always @(*) begin
+            // Q0.7 → 四捨五入後右移 7，無號 0~255 飽和
+        // acc_round <= acc + $signed(24'sd1 <<< (FRAC_BITS-1));
+        acc_round = acc + HALF_LSB;
+        acc_shift = acc_round >>> FRAC_BITS;
+
+        if (acc_shift < 0)        clip_u = 9'd0;
+        else if (acc_shift > 255) clip_u = 9'd255;
+        else                      clip_u = acc_shift[8:0];
     end
 
     // FFs
@@ -238,14 +255,6 @@ module Conv_Engine (
                 end
 
                 S_WRITE: begin
-                    // Q0.7 → 四捨五入後右移 7，無號 0~255 飽和
-                    acc_round = acc + $signed(24'sd1 <<< (FRAC_BITS-1));
-                    acc_shift = acc_round >>> FRAC_BITS;
-
-                    if (acc_shift < 0)        clip_u = 9'd0;
-                    else if (acc_shift > 255) clip_u = 9'd255;
-                    else                      clip_u = acc_shift[8:0];
-
                     o_out_data1  <= clip_u[7:0];       // 無號 8-bit
                     o_out_addr1  <= out_addr_flat;
                     o_out_valid1 <= 1'b1;

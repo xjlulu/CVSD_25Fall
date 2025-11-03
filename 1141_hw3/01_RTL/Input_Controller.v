@@ -11,8 +11,7 @@ module Input_Controller(
     output reg  [11:0] sram_addr,
     output reg  [7:0]  sram_din,
     output reg         sram_cen,   // active low
-    output reg         sram_wen,   // active low
-    input      [7:0]   sram_q
+    output reg         sram_wen   // active low
 );
 
     // ------------------------------------------------------------
@@ -25,7 +24,7 @@ module Input_Controller(
     reg [1:0] state, next_state;
 
     reg [31:0] data_buf;
-    reg [1:0]  byte_cnt;     // 0~3, which byte of the 32-bit data
+    reg [1:0]  byte_cnt, byte_cnt_n;     // 0~3, which byte of the 32-bit data
     reg [11:0] addr_cnt;     // 0~4095
 
     // ------------------------------------------------------------
@@ -61,6 +60,29 @@ module Input_Controller(
         endcase
     end
 
+    always @(*) begin
+        byte_cnt_n = byte_cnt;
+        case (state)
+            S_IDLE: begin
+            // 只在「真的接到一筆新資料」時把 counter 啟動/歸 0
+            if (i_in_valid && o_in_ready)
+                byte_cnt_n = 2'd0;
+            end
+            S_WRITE: begin
+            // 連續 4 個 byte：0,1,2,3 -> 回 0
+            byte_cnt_n = (byte_cnt == 2'd3) ? 2'd0 : (byte_cnt + 2'd1);
+            end
+            default: ;
+        endcase
+    end
+
+    always @(posedge i_clk or negedge i_rst_n) begin
+        if (!i_rst_n)
+            byte_cnt <= 2'd0;
+        else
+            byte_cnt <= byte_cnt_n;
+    end
+    
     // ------------------------------------------------------------
     // Sequential logic
     // ------------------------------------------------------------
@@ -74,8 +96,8 @@ module Input_Controller(
             sram_din    <= 8'd0;
             addr_cnt    <= 12'd0;
             data_buf    <= 32'd0;
-            byte_cnt    <= 2'd0;
-        end else begin
+        end
+        else begin
             case (state)
                 // ===================================================
                 // IDLE: 等待上層給資料
@@ -87,7 +109,6 @@ module Input_Controller(
 
                     // 準備好接收下一個 32-bit 輸入
                     o_in_ready <= 1'b1;
-                    byte_cnt   <= 2'd0;
 
                     if (i_in_valid && o_in_ready) begin
                         data_buf   <= i_in_data;
@@ -99,9 +120,6 @@ module Input_Controller(
                 // WRITE: 將 data_buf 內容拆成 4 byte 寫入 SRAM
                 // ===================================================
                 S_WRITE: begin
-                    sram_cen <= 1'b0;  // enable
-                    sram_wen <= 1'b0;  // write enable
-
                     case (byte_cnt)
                         2'd0: sram_din <= data_buf[31:24];
                         2'd1: sram_din <= data_buf[23:16];
@@ -115,18 +133,16 @@ module Input_Controller(
                     if (addr_cnt < 12'd4095)
                         addr_cnt <= addr_cnt + 1'b1;
 
-                    if (byte_cnt == 2'd3)
-                        byte_cnt <= 2'd0;
-                    else
-                        byte_cnt <= byte_cnt + 1'b1;
-
                     // 若這 4 bytes 寫完，讓 FSM 回到 IDLE，ready 再開
                     if (byte_cnt == 2'd3 && addr_cnt != 12'd4095) begin
                         o_in_ready <= 1'b1;
                         sram_cen   <= 1'b1;
                         sram_wen   <= 1'b1;
-                    end else begin
+                    end
+                    else begin
                         o_in_ready <= 1'b0;
+                        sram_cen   <= 1'b0;  // enable
+                        sram_wen   <= 1'b0;  // write enable
                     end
                 end
 

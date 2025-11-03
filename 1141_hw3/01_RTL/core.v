@@ -69,11 +69,6 @@ reg [1:0] phase, nphase;
 // 非法參數脈衝（在進 DONE 的第一拍輸出 0 並拉 valid）
 reg inv_pulse;
 
-// 判斷配置是否合法
-wire invalid_cfg = (kernel_size != 8'd3) ||
-                   ((stride_size != 8'd1) && (stride_size != 8'd2)) ||
-                   ((dilation_size != 8'd1) && (dilation_size != 8'd2));
-
 // ============================================================
 // SRAM 實例
 // ============================================================
@@ -100,8 +95,7 @@ Input_Controller U_in_ctrl (
     .sram_addr  (sram_addr_in),
     .sram_din   (sram_din_in),
     .sram_cen   (sram_cen_in),
-    .sram_wen   (sram_wen_in),
-    .sram_q     (sram_q)
+    .sram_wen   (sram_wen_in)
 );
 
 // ============================================================
@@ -146,7 +140,6 @@ Conv_Engine U_eng (
     .i_rst_n        (i_rst_n),
     .i_start        ( (phase==PHASE_CONV) && w_done ),
 
-    .i_kernel_size  (kernel_size),
     .i_stride_size  (stride_size),
     .i_dilation_size(dilation_size),
 
