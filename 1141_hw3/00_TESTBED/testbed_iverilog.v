@@ -1,63 +1,64 @@
 `timescale 1ns/1ps
 `define CYCLE       5.0
 `define HCYCLE      (`CYCLE/2)
-`define MAX_CYCLE   20000
+`define MAX_CYCLE   200000
 `define RST_DELAY   2
 
+// 預設 PATTERNS 根路徑；run.sh 會用 -DTB_PAT="\"<abs path>\"" 覆寫成絕對路徑
 `ifndef TB_PAT
   `define TB_PAT "../00_TESTBED/PATTERNS"
 `endif
 
+// ---- 測資選擇（檔名只放「檔名本身」，不含路徑）----
 `ifdef tb1
-    // `define INFILE `TB_PAT "/img1_030101_00.dat"
-    `define INFILE {`TB_PAT, "/img1_030101_00.dat"}
-    // `define WFILE  `TB_PAT "/weight_img1_030101_00.dat"
-    `define WFILE  {`TB_PAT, "/weight_img1_030101_00.dat"}
-    // `define GOLDEN `TB_PAT "/golden_img1_030101_00.dat"
-    `define GOLDEN {`TB_PAT, "/golden_img1_030101_00.dat"}
-    `define K_SIZE 3
-    `define S_SIZE 1
-    `define D_SIZE 1
+    `define IN_BASE  "img1_030101_00.dat"
+    `define W_BASE   "weight_img1_030101_00.dat"
+    `define G_BASE   "golden_img1_030101_00.dat"
+    `define K_SIZE   3
+    `define S_SIZE   1
+    `define D_SIZE   1
     `define VALID_OP 1
     `define OUTPUTSIZE 4096
 `elsif tb2
-    `define INFILE `TB_PAT "/img1_030102_053.dat"
-    `define WFILE  `TB_PAT "/weight_img1_030102_053.dat"
-    `define GOLDEN `TB_PAT "/golden_img1_030102_053.dat"
-    `define K_SIZE 3
-    `define S_SIZE 1
-    `define D_SIZE 2
+    `define IN_BASE  "img1_030102_053.dat"
+    `define W_BASE   "weight_img1_030102_053.dat"
+    `define G_BASE   "golden_img1_030102_053.dat"
+    `define K_SIZE   3
+    `define S_SIZE   1
+    `define D_SIZE   2
     `define VALID_OP 1
     `define OUTPUTSIZE 4096
 `elsif tb3
-    `define INFILE `TB_PAT "/img1_030201_70.dat"
-    `define WFILE  `TB_PAT "/weight_img1_030201_70.dat"
-    `define GOLDEN `TB_PAT "/golden_img1_030201_70.dat"
-    `define K_SIZE 3
-    `define S_SIZE 2
-    `define D_SIZE 1
+    `define IN_BASE  "img1_030201_70.dat"
+    `define W_BASE   "weight_img1_030201_70.dat"
+    `define G_BASE   "golden_img1_030201_70.dat"
+    `define K_SIZE   3
+    `define S_SIZE   2
+    `define D_SIZE   1
     `define VALID_OP 1
     `define OUTPUTSIZE 1024
 `elsif tb4
-    `define INFILE `TB_PAT "/img1_030202_753.dat"
-    `define WFILE  `TB_PAT "/weight_img1_030202_753.dat"
-    `define GOLDEN `TB_PAT "/golden_img1_030202_753.dat"
-    `define K_SIZE 3
-    `define S_SIZE 2
-    `define D_SIZE 2
+    `define IN_BASE  "img1_030202_753.dat"
+    `define W_BASE   "weight_img1_030202_753.dat"
+    `define G_BASE   "golden_img1_030202_753.dat"
+    `define K_SIZE   3
+    `define S_SIZE   2
+    `define D_SIZE   2
     `define VALID_OP 1
     `define OUTPUTSIZE 1024
 `else
-    `define INFILE `TB_PAT "/img1_050102_514.dat"
-    `define WFILE  `TB_PAT "/weight_img1_050102_514.dat"
-    `define GOLDEN `TB_PAT "/golden_img1_050102_514.dat"
-    `define K_SIZE 0
-    `define S_SIZE 0
-    `define D_SIZE 0
+    // 預設關卡（避免誤觸）
+    `define IN_BASE  "img1_050102_514.dat"
+    `define W_BASE   "weight_img1_050102_514.dat"
+    `define G_BASE   "golden_img1_050102_514.dat"
+    `define K_SIZE   0
+    `define S_SIZE   0
+    `define D_SIZE   0
     `define VALID_OP 0
     `define OUTPUTSIZE 0
 `endif
 
+// 僅供參考；iverilog 不支援 $sdf_annotate，請勿加 -DSDF
 `define SDFFILE "../02_SYN/Netlist/core_syn.sdf"
 
 module testbed_iverilog;
@@ -73,7 +74,7 @@ module testbed_iverilog;
     wire        exe_finish;
 
     reg  [7:0]  indata_mem [0:4096-1];
-    reg  [7:0]  weight_mem [0:25-1];
+    reg  [7:0]  weight_mem [0:25-1];     // 實際只讀 K*K 筆
     reg  [7:0]  golden_mem [0:4096-1];
     reg  [7:0]  out_mem    [0:4096-1];
 
@@ -89,8 +90,8 @@ module testbed_iverilog;
 
     // VCD
     initial begin
-        $dumpfile("core.vcd");
-        $dumpvars(0, testbed_iverilog); // ← 模組名要對
+        $dumpfile("build/core.vcd");
+        $dumpvars(0, testbed_iverilog);
     end
 
     core u_core (
@@ -119,15 +120,26 @@ module testbed_iverilog;
         .o_exe_finish (exe_finish)
     );
 
-    // 讀入測資（明確指定範圍，避免 iverilog 警告）
-    localparam integer IMG_CNT    = 4096;                 // 64*64
-    localparam integer WEIGHT_CNT = (`K_SIZE*`K_SIZE);    // tb1=9, tb2=9, tb3/4=9（依 K_SIZE）
-    localparam integer GOLD_CNT   = `OUTPUTSIZE;          // 4096 或 1024（依案例）
+    // ===== 讀檔：以 sformatf 組絕對路徑，並限定讀取範圍 =====
+    localparam int IMG_CNT    = 4096;                // 64*64
+    localparam int WEIGHT_CNT = (`K_SIZE*`K_SIZE);   // tb1~tb4: 3*3=9
+    localparam int GOLD_CNT   = `OUTPUTSIZE;         // 4096 或 1024
 
-    // 讀入測資
-    initial $readmemh(`INFILE,  indata_mem,  0, IMG_CNT-1);
-    initial $readmemh(`WFILE,   weight_mem,  0, WEIGHT_CNT-1);
-    initial $readmemh(`GOLDEN,  golden_mem,  0, GOLD_CNT-1);
+    string INFILE_S, WFILE_S, GOLDEN_S;
+    initial begin
+        INFILE_S = $sformatf("%s/%s", `TB_PAT, `IN_BASE);
+        WFILE_S  = $sformatf("%s/%s", `TB_PAT, `W_BASE);
+        GOLDEN_S = $sformatf("%s/%s", `TB_PAT, `G_BASE);
+
+        $display("[INFO] INFILE = %s", INFILE_S);
+        $display("[INFO] WFILE  = %s", WFILE_S);
+        $display("[INFO] GOLDEN = %s", GOLDEN_S);
+
+        $readmemh(INFILE_S,  indata_mem,  0, IMG_CNT-1);
+        $readmemh(WFILE_S,   weight_mem,  0, WEIGHT_CNT-1);
+        $readmemh(GOLDEN_S,  golden_mem,  0, GOLD_CNT-1);
+    end
+    // ======================================================
 
     // clock
     initial clk = 1'b0;
@@ -142,7 +154,7 @@ module testbed_iverilog;
         $finish;
     end
 
-    // 資料輸入
+    // 輸入資料（圖片 + 權重）
     initial begin
         cnt1 = 0;
         cntw = 0;

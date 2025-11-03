@@ -8,6 +8,8 @@
 core.v
 Input_Controller.v
 Barcode_Decoder.v
+Weight_Loader.v
+Conv_Engine.v
 /home/xjlu/CVSD_25Fall/1141_hw3/sram_4096x8/sram_4096x8.v
 
 # === Testbench ===

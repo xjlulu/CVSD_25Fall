@@ -9,7 +9,7 @@ module Barcode_Decoder (
     // SRAM interface (read-only)
     output reg  [11:0] sram_addr,     // = row*64 + col
     output reg         sram_cen,      // active low
-    output reg         sram_wen,      // active low (always read)
+    output reg         sram_wen,      // active low (read => 1)
     input       [7:0]  sram_q,
 
     // Decoded results
@@ -23,13 +23,12 @@ module Barcode_Decoder (
     localparam [10:0] CODE_03_PAT = 11'b10010011000;      // 11 bits (K=03)
     localparam [10:0] CODE_01_PAT = 11'b11001101100;      // 11 bits
     localparam [10:0] CODE_02_PAT = 11'b11001100110;      // 11 bits
-    localparam [12:0] STOP_PAT    = 13'b1100011101011;    // 13 bits (!!)
+    localparam [12:0] STOP_PAT    = 13'b1100011101011;    // 13 bits
 
     // 影像大小與掃描限制
     localparam integer COL_MAX      = 63;
     localparam integer ROW_MAX      = 63;
-    localparam integer START_MAXCOL = 7;     // Start 起點只能 0..7
-    localparam integer SCAN_CUTOFF  = 17;    // SCAN 階段在 prev_col>17 就不再比對 Start（等價限制起點<=7）
+    localparam integer SCAN_CUTOFF  = 17;   // 只允許起點在 0..7（等價：prev_col<=17 時才可能完整 57 bits）
 
     // -------- FSM --------
     localparam S_IDLE        = 3'd0;
@@ -55,38 +54,52 @@ module Barcode_Decoder (
     // -------- 視窗與計數 --------
     reg [10:0] sh11;          // 11-bit shift 視窗 (Start/K/S/D)
     reg [12:0] sh13;          // 13-bit shift 視窗 (Stop)
-    reg  [3:0] cnt11;         // 0..11
-    reg  [3:0] cnt13;         // 0..13
+    reg  [3:0] cnt11;         // 1..11（蒐集 11 個 bit）
+    reg  [3:0] cnt13;         // 1..13（蒐集 13 個 bit）
 
     // -------- 暫存解碼 --------
     reg [7:0] k_val, s_val, d_val;
     reg       found_start;
 
-    // 命中偵測（在 q_valid 的同拍、且只在合法欄位範圍）
-    wire start_hit = (q_valid && state==S_SCAN && cnt11>=4'd11 &&
-                      (prev_col <= SCAN_CUTOFF) && (sh11 == START_C_PAT));
+    // ---- 「下一個視窗」本拍命中判斷（避免等到下一拍才知道） ----
+    wire [10:0] sh11_next = {sh11[9:0], sram_q[0]};
+    wire [12:0] sh13_next = {sh13[11:0], sram_q[0]};
+
+    // SCAN 階段：cnt11>=10 表示把「本拍位元」shift 進去就湊滿 11 bits 可比對
+    wire start_hit_now = (q_valid && state==S_SCAN &&
+                          (cnt11 >= 4'd10) &&
+                          (prev_col <= SCAN_CUTOFF) &&
+                          (sh11_next == START_C_PAT));
+
+    // STOP 階段：同理，cnt13>=12 時用 sh13_next 比對本拍命中
+    wire stop_hit_now  = (q_valid && state==S_DECODE_STOP &&
+                          (cnt13 >= 4'd12) &&
+                          (sh13_next == STOP_PAT));
+    reg  stop_hit_dly;
 
     // =======================
-    // Next-state
+    // Next-state（用「本拍命中」輔助）
     // =======================
     always @(*) begin
         nstate = state;
         case (state)
-            S_IDLE:        if (i_start) nstate = S_SCAN;
-            S_SCAN:        if (found_start) nstate = S_DECODE_K;
-                           else if (prev_row==ROW_MAX && prev_col>SCAN_CUTOFF && q_valid) nstate = S_VALIDATE;
-            S_DECODE_K:    if (q_valid && cnt11==4'd11) nstate = S_DECODE_S;
-            S_DECODE_S:    if (q_valid && cnt11==4'd11) nstate = S_DECODE_D;
-            S_DECODE_D:    if (q_valid && cnt11==4'd11) nstate = S_DECODE_STOP;
-            S_DECODE_STOP: if (q_valid && cnt13==4'd13) nstate = S_VALIDATE;
-            S_VALIDATE:    nstate = S_DONE;
-            S_DONE:        nstate = S_DONE;
-            default:       nstate = S_IDLE;
+            S_IDLE        : if (i_start)                nstate = S_SCAN;
+            S_SCAN        : if (found_start)            nstate = S_DECODE_K;
+                             else if (q_valid && prev_row==ROW_MAX && prev_col>SCAN_CUTOFF)
+                                                     nstate = S_VALIDATE;
+            S_DECODE_K    : if (q_valid && cnt11==4'd11) nstate = S_DECODE_S;
+            S_DECODE_S    : if (q_valid && cnt11==4'd11) nstate = S_DECODE_D;
+            S_DECODE_D    : if (q_valid && cnt11==4'd11) nstate = S_DECODE_STOP;
+            S_DECODE_STOP : if (q_valid && cnt13==4'd13) nstate = S_VALIDATE;
+            S_VALIDATE    : nstate = S_DONE;
+            S_DONE        : nstate = S_DONE;
+            default       : nstate = S_IDLE;
         endcase
     end
 
     // =======================
-    // 下一個要發的掃描座標（含命中時凍結）
+    // 下一個要發的掃描座標
+    // （不凍結 sh11；命中當拍只禁止「>17 快速換行」捷徑）
     // =======================
     always @(*) begin
         n_row = row;
@@ -95,18 +108,12 @@ module Barcode_Decoder (
         if (state==S_SCAN || state==S_DECODE_K || state==S_DECODE_S ||
             state==S_DECODE_D || state==S_DECODE_STOP) begin
 
-            // ★ 命中 Start 的當拍 → 凍結座標，不再做 col+1
-            if (state==S_SCAN && start_hit) begin
-                n_row = row;
-                n_col = col;   // freeze one cycle
-            end
-            // ★ SCAN 階段若 >17 還沒命中，直接換列（加速）
-            else if (state==S_SCAN && !found_start && col>SCAN_CUTOFF) begin
+            // 只有「SCAN 且本拍未命中」時，才允許 col>SCAN_CUTOFF 的快速換行
+            if (state==S_SCAN && !found_start && !start_hit_now && (col > SCAN_CUTOFF)) begin
                 n_col = 6'd0;
                 n_row = (row==ROW_MAX) ? ROW_MAX : (row + 6'd1);
-            end
-            // ★ 一般推進
-            else begin
+            end else begin
+                // 一般推進
                 if (col==COL_MAX) begin
                     n_col = 6'd0;
                     n_row = (row==ROW_MAX) ? ROW_MAX : (row + 6'd1);
@@ -119,7 +126,6 @@ module Barcode_Decoder (
 
     // =======================
     // 主時序：先處理上拍資料，再發下拍位址
-    //   ※ 依你的要求：sh11/sh13 的 shift 改成使用 sram_q[0] 直接餵入
     // =======================
     always @(posedge i_clk or negedge i_rst_n) begin
         if (!i_rst_n) begin
@@ -138,10 +144,11 @@ module Barcode_Decoder (
 
             sh11          <= 11'd0;
             sh13          <= 13'd0;
-            cnt11         <= 4'd0;
+            cnt11         <= 4'd0;   // 進入讀取後第一拍會++ 到 1
             cnt13         <= 4'd0;
 
             found_start   <= 1'b0;
+            stop_hit_dly  <= 1'b0;
             k_val         <= 8'd0;
             s_val         <= 8'd0;
             d_val         <= 8'd0;
@@ -152,22 +159,30 @@ module Barcode_Decoder (
             o_stride_size <= 8'd0;
             o_dilation_size <= 8'd0;
         end else begin
-            state <= nstate;
+            // 狀態轉移（在 SCAN 命中當拍，直接切到 K 解碼）
+            if (state==S_SCAN && start_hit_now)
+                state <= S_DECODE_K;
+            else if (state==S_DECODE_STOP && stop_hit_now) begin
+                state <= S_VALIDATE;
+            end
+            else
+                state <= nstate;
 
             // 1) 先處理「上拍」資料（與 sram_q 對齊的 prev_row/prev_col）
             if (q_valid) begin
                 case (state)
-                    // ---------- SCAN：only prev_col <= 17 才允許比對 ----------
+                    // ---------- SCAN：持續 shift；命中使用本拍 sh11_next 判斷 ----------
                     S_SCAN: begin
-                        // ※ 依你的要求：直接用 sram_q[0] 進 shift
                         sh11 <= {sh11[9:0], sram_q[0]};
-                        if (cnt11 != 4'd11) cnt11 <= cnt11 + 4'd1;
+                        if (cnt11 < 4'd11) cnt11 <= cnt11 + 4'd1;
 
-                        if (!found_start && cnt11>=4'd11 && (prev_col <= SCAN_CUTOFF)) begin
-                            if (sh11 == START_C_PAT) begin
-                                found_start <= 1'b1;
-                                cnt11       <= 4'd0;
-                            end
+                        if (!found_start && start_hit_now) begin
+                            // 本拍命中 Start_C
+                            found_start <= 1'b1;
+                            // 下拍已是 S_DECODE_K，從 11-bit 的第 1 個 bit 開始重新計
+                            cnt11 <= 4'd1;
+                            sh13  <= 13'd0;
+                            cnt13 <= 4'd0;
                         end
                     end
 
@@ -176,32 +191,35 @@ module Barcode_Decoder (
                         sh11 <= {sh11[9:0], sram_q[0]};
                         if (cnt11 != 4'd11) cnt11 <= cnt11 + 4'd1;
 
-                        if (cnt11==4'd11) begin
+                        if (cnt11 == 4'd11) begin
                             if (state==S_DECODE_K) begin
-                                k_val <= (sh11==CODE_03_PAT) ? 8'd3 : 8'd0;
+                                k_val <= (sh11_next==CODE_03_PAT) ? 8'd3 : 8'd0;
                             end else if (state==S_DECODE_S) begin
-                                s_val <= (sh11==CODE_01_PAT) ? 8'd1 :
-                                         (sh11==CODE_02_PAT) ? 8'd2 : 8'd0;
+                                s_val <= (sh11_next==CODE_01_PAT) ? 8'd1 :
+                                         (sh11_next==CODE_02_PAT) ? 8'd2 : 8'd0;
                             end else begin
-                                d_val <= (sh11==CODE_01_PAT) ? 8'd1 :
-                                         (sh11==CODE_02_PAT) ? 8'd2 : 8'd0;
+                                d_val <= (sh11_next==CODE_01_PAT) ? 8'd1 :
+                                         (sh11_next==CODE_02_PAT) ? 8'd2 : 8'd0;
                             end
-                            sh11  <= 11'd0;
-                            cnt11 <= 4'd0;
+                            cnt11 <= 4'd1; // 下一個 11-bit 重新開始
                         end
+                        // 同步更新 Stop 視窗
+                        sh13 <= {sh13[11:0], sram_q[0]};
                     end
 
                     // ---------- STOP：13-bit ----------
                     S_DECODE_STOP: begin
                         sh13 <= {sh13[11:0], sram_q[0]};
                         if (cnt13 != 4'd13) cnt13 <= cnt13 + 4'd1;
+                        // 記錄「本拍命中」
+                        stop_hit_dly <= stop_hit_now;
                     end
 
                     default: ; // no-op
                 endcase
             end
 
-            // 2) 狀態轉移時的雜項控制
+            // 2) 狀態進／出時的雜項控制
             case (state)
                 S_IDLE: begin
                     // 啟動讀
@@ -221,7 +239,7 @@ module Barcode_Decoder (
                     if (k_val==8'd3 &&
                         (s_val==8'd1 || s_val==8'd2) &&
                         (d_val==8'd1 || d_val==8'd2) &&
-                        (sh13==STOP_PAT)) begin
+                        stop_hit_dly) begin
                         o_kernel_size   <= 8'd3;
                         o_stride_size   <= s_val;
                         o_dilation_size <= d_val;
