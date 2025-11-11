@@ -1,0 +1,16 @@
+StudentID: 
+Clock period:  (ns)
+Area:  (um^2)
+--------------------
+f1 time:  (ns)
+f1 power:  (mW)
+--------------------
+f2 time:  (ns)
+f2 power:  (mW)
+--------------------
+f3 time:  (ns)
+f3 power:  (mW)
+--------------------
+f4 time:  (ns)
+f4 power:  (mW)
+
