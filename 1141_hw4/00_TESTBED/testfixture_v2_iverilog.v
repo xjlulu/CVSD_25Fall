@@ -4,6 +4,7 @@
 `define DEL         1.0
 `define PAT_NUM     64
 `define End_CYCLE   1000000 
+`define DES_DEBUG
 
 
 module test;
@@ -76,6 +77,57 @@ IOTDF u_IOTDF( .clk        (clk        ),
                .high       (128'hBFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF),
 `endif
 */
+
+// des debug %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// `ifdef DES_DEBUG
+// // 把 des_core 裡一些重要的訊號拉出來看
+// // 注意：這些都是 hierarchical reference，不會影響合成，只用在模擬
+// wire [1:0]  des_state    = u_IOTDF.u_des_core.state;
+// wire [3:0]  des_round    = u_IOTDF.u_des_core.round_idx;
+// wire [31:0] des_L        = u_IOTDF.u_des_core.L_reg;
+// wire [31:0] des_R        = u_IOTDF.u_des_core.R_reg;
+// wire [31:0] des_f        = u_IOTDF.u_des_core.f_out;
+// wire [47:0] des_curkey   = u_IOTDF.u_des_core.cur_subkey;
+// wire [63:0] des_ip_out   = u_IOTDF.u_des_core.ip_out;
+// wire [55:0] des_pc1_out  = u_IOTDF.u_des_core.pc1_out;
+// wire [63:0] des_text_in  = u_IOTDF.u_des_core.text_in;
+
+// // optional: 看 subkey[0] ~ subkey[3] 生成是否正確
+// wire [47:0] des_k0 = u_IOTDF.u_des_core.subkey[0];
+// wire [47:0] des_k1 = u_IOTDF.u_des_core.subkey[1];
+// wire [47:0] des_k2 = u_IOTDF.u_des_core.subkey[2];
+// wire [47:0] des_k3 = u_IOTDF.u_des_core.subkey[3];
+
+// // 在 S_KEY 階段，每一輪把 subkey dump 出來
+// always @(posedge clk) begin
+//     // 只在 F1 (fn_sel=1) 且第一筆 pattern (x==0) 時印，避免太爆
+//     if (fn_sel == 3'd1 && x == 0 && des_state == 2'd1) begin
+//         $display("[DES KEY] t=%0t round=%2d C=%07h D=%07h subkey=%012h",
+//                  $time, des_round, u_IOTDF.u_des_core.C, u_IOTDF.u_des_core.D,
+//                  des_curkey);
+//     end
+// end
+
+// // 在 S_ROUND 階段，每一輪印 L/R + f_out + subkey
+// always @(posedge clk) begin
+//     if (fn_sel == 3'd1 && x == 0 && des_state == 2'd2) begin
+//         $display("[DES ROUND] t=%0t r=%2d L=%08h R=%08h f=%08h key=%012h",
+//                  $time, des_round, des_L, des_R, des_f, des_curkey);
+//     end
+// end
+
+// // 在 IP 完成那一拍觀察 ip_out, text_in
+// always @(posedge clk) begin
+//     if (fn_sel == 3'd1 && x == 0 && des_state == 2'd2 && des_round == 0) begin
+//         $display("[DES IP] t=%0t text_in=%016h ip_out=%016h",
+//                  $time, des_text_in, des_ip_out);
+//     end
+// end
+
+// `endif
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
 
 initial begin
    cycle_count = 0;
@@ -273,6 +325,20 @@ always @(posedge clk)begin
 
    end                                                                        
 end
+
+// // ==== CRC debug：列出 crc_reg 的中間值 ====
+// always @(posedge clk) begin
+//    // 只在 F3 模式、且 CRC 核心正在跑的時候印
+// `ifdef F3
+//    if (u_IOTDF.u_crc3_core.running) begin
+//       $display("  [CRC dbg] time=%0t  bit_idx=%3d  crc_reg=%03b  data_bit=%b",
+//                $time,
+//                u_IOTDF.u_crc3_core.bit_idx,
+//                u_IOTDF.u_crc3_core.crc_reg,
+//                u_IOTDF.u_crc3_core.data_in[u_IOTDF.u_crc3_core.bit_idx]);
+//    end
+// `endif
+// end
 
 always @(*)begin
    over = over1 && over2;

@@ -10,7 +10,7 @@
 # ========= 設定區：請依你的專案目錄修改 =========
 
 TB="../00_TESTBED/testfixture_v2_iverilog.v"          # 測試檔（剛剛那個 patched 版本）
-RTL="../01_RTL/IOTDF.v"                 # RTL 檔案路徑
+RTL_DIR="../01_RTL"                     # RTL 檔案路徑
 GLS="../02_SYN/Netlist/IOTDF_syn.v"     # 綜合後 netlist 檔案路徑
 
 OUT="simv"                              # 輸出執行檔名稱
@@ -39,8 +39,8 @@ DEFINES="-D vcd -D ${FUNC}"
 
 # 根據模式決定要編哪些檔
 if [[ "$MODE" == "rtl" ]]; then
-  FILES="$TB $RTL"
-  echo "[INFO] 使用 RTL 模式：$RTL"
+  FILES="$TB $RTL_DIR/*.v"
+  echo "[INFO] RTL 模式：包含 $RTL_DIR 下所有 .v 檔"
 else
   FILES="$TB $GLS"
   echo "[INFO] 使用 SYN (gate-level) 模式（不含 SDF）：$GLS"
