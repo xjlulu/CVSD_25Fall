@@ -1,6 +1,6 @@
 // ============================================================
-// BCH hard-decision core (skeleton version)
-//  - 只管流程與 handshake，不管演算法內容
+// BCH hard-decision core (skeleton version) -- updated with
+//   success conditions and syndrome-all-zero detection
 // ============================================================
 module bch_hard_core
 #(
@@ -20,7 +20,7 @@ module bch_hard_core
     input  wire [N_MAX-1:0]     hard_bits,
 
     output reg                  done,      // decode 完成，一拍 pulse
-    output reg                  success,   // skeleton: 先一律拉 1，之後再改成真正判斷
+    output reg                  success,   // decode 是否成功
     output reg [N_MAX-1:0]      err_vec
 );
 
@@ -69,11 +69,9 @@ module bch_hard_core
     reg [N_MAX-1:0]     err_vec_next;
 
     // ============================================================
-    //  Submodule instances (目前是 "假的" 版本，只用來 debug handshake)
-    //  之後你可以把這三個 module 換成真正的 syn_calc/berlekamp/chien
+    //  Submodule instances（保持原樣）
     // ============================================================
 
-    // 假的 syndrome 計算：看到 start 後延遲幾拍，拉 done
     syn_calc #(
         .N_MAX (N_MAX),
         .T_MAX (T_MAX),
@@ -90,7 +88,6 @@ module bch_hard_core
         .syndromes (syndromes)
     );
 
-    // 假的 Berlekamp：看到 start 後延遲幾拍，拉 done
     berlekamp #(
         .T_MAX (T_MAX),
         .M_MAX (M_MAX)
@@ -107,7 +104,6 @@ module bch_hard_core
         .sigma     (sigma)
     );
 
-    // 假的 Chien search：看到 start 後延遲幾拍，拉 done
     chien #(
         .N_MAX (N_MAX),
         .T_MAX (T_MAX),
@@ -125,7 +121,13 @@ module bch_hard_core
     );
 
     // ============================================================
-    //  Sequential: 狀態與暫存器
+    //   ★★★ 新增：syndrome 是否全 0 判斷 ★★★
+    // ============================================================
+    wire syn_all_zero;  /*** ADD ***/
+    assign syn_all_zero = (syndromes == {2*T_MAX*M_MAX{1'b0}});
+
+    // ============================================================
+    //  Sequential
     // ============================================================
     always @(posedge clk) begin
         if (!rstn) begin
@@ -144,7 +146,6 @@ module bch_hard_core
             success <= success_next;
             err_vec <= err_vec_next;
 
-            // 在 IDLE 並且 start=1 的那一拍，latch inputs
             if (state == S_IDLE && start) begin
                 n_reg         <= n;
                 t_reg         <= t;
@@ -155,78 +156,78 @@ module bch_hard_core
     end
 
     // ============================================================
-    //  Combinational: 下一狀態與 handshake 脈波
+    //  Combinational
     // ============================================================
     always @* begin
-        // 預設保持原狀
+        // 預設保持
         state_next   = state;
 
-        // 預設 output 下一拍
-        done_next    = 1'b0;        // 預設 done 為 0，只有在 S_CHIEN → S_DONE transition 才打一拍
-        success_next = success;     // 預設維持上一輪結果
+        done_next    = 1'b0;
+        success_next = success;
         err_vec_next = err_vec;
 
-        // submodule start pulse 預設為 0
         syn_start    = 1'b0;
         ber_start    = 1'b0;
         chien_start  = 1'b0;
 
         case (state)
-            // --------------------------
-            // IDLE: 等待 start
-            // --------------------------
+
             S_IDLE: begin
-                // 新的一輪開始時，可以考慮順便把 success 清為 0
                 if (start) begin
                     state_next   = S_SYN;
-                    syn_start    = 1'b1;   // 啟動 syn_calc，一拍 pulse
-                    success_next = 1'b0;   // 新一輪 decode，先假設還沒成功
+                    syn_start    = 1'b1;
+                    success_next = 1'b0;
                 end
             end
 
-            // --------------------------
-            // S_SYN: 等 syn_calc.done
-            // --------------------------
             S_SYN: begin
                 if (syn_done) begin
                     state_next = S_BER;
-                    ber_start  = 1'b1;     // 啟動 berlekamp，一拍 pulse
+                    ber_start  = 1'b1;
                 end
             end
 
-            // --------------------------
-            // S_BER: 等 berlekamp.done
-            // --------------------------
             S_BER: begin
                 if (ber_done) begin
                     state_next  = S_CHIEN;
-                    chien_start = 1'b1;    // 啟動 chien，一拍 pulse
+                    chien_start = 1'b1;
                 end
             end
 
-            // --------------------------
-            // S_CHIEN: 等 chien.done
-            // --------------------------
+            // ====================================================
+            // ★★★ 修改：加入正確的成功條件 ★★★
+            // ====================================================
             S_CHIEN: begin
                 if (chien_done) begin
-                    state_next   = S_DONE;
-                    done_next    = 1'b1;          // 對外宣告 decode 完成（打一拍）
-                    success_next = 1'b1;          // skeleton 先一律當作成功
-                    err_vec_next = chien_err_vec; // skeleton 先直接接 chien 的輸出
+                    state_next = S_DONE;
+                    done_next  = 1'b1;
+
+                    // ---- 成功條件 ----
+
+                    if (syn_all_zero) begin
+                        // syndrome = 0 → 原本就沒錯誤
+                        success_next = 1'b1;
+                        err_vec_next = {N_MAX{1'b0}};
+
+                    end else if (ber_failure || (ber_degree > t_reg)) begin
+                        // Berlekamp fail，或 sigma degree > t
+                        success_next = 1'b0;
+                        err_vec_next = {N_MAX{1'b0}};
+
+                    end else begin
+                        // 合理的 sigma → 相信 Chien 的 err_vec
+                        success_next = 1'b1;
+                        err_vec_next = chien_err_vec;
+                    end
                 end
             end
 
-            // --------------------------
-            // S_DONE: 結束，回到 IDLE
-            // --------------------------
             S_DONE: begin
                 state_next = S_IDLE;
-                // done_next 在這裡已經回到 0（上面預設），所以 done 只會有一拍
             end
 
-            default: begin
-                state_next = S_IDLE;
-            end
+            default: state_next = S_IDLE;
+
         endcase
     end
 

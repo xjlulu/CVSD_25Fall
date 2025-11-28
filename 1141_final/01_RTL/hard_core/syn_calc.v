@@ -1,4 +1,5 @@
-// Fake syn_calc: 延遲 4 個 clock 後拉 done，一次一拍
+// Fake syn_calc: 延遲 4 個 clock 後拉 done，一拍 pulse
+// 允許 testbench override syndrome
 module syn_calc
 #(
     parameter integer N_MAX = 1023,
@@ -20,25 +21,49 @@ module syn_calc
 
     reg [2:0] cnt;
 
+    // ======================================================
+    // ★ TB override register ★
+    // ======================================================
+    reg [2*T_MAX*M_MAX-1:0] syndrome_override;
+
+    // TB 設定 syndrome 用
+    task tb_set_syndrome(input [2*T_MAX*M_MAX-1:0] val);
+    begin
+        syndrome_override = val;
+    end
+    endtask
+
+    // ======================================================
+    // Reset + 延遲流程（完全保留你的寫法）
+    // ======================================================
     always @(posedge clk) begin
         if (!rstn) begin
-            cnt       <= 3'd0;
-            done      <= 1'b0;
-            syndromes <= {2*T_MAX*M_MAX{1'b0}};
+            cnt              <= 3'd0;
+            done             <= 1'b0;
+            syndromes        <= {2*T_MAX*M_MAX{1'b0}};
+            syndrome_override<= {2*T_MAX*M_MAX{1'b0}};  // default
         end else begin
+
             if (start) begin
-                cnt  <= 3'd4;   // 假設 latency = 4 cycles
-                done <= 1'b0;
-            end else if (cnt != 3'd0) begin
+                cnt       <= 3'd4;    // 你原本的 latency
+                done      <= 1'b0;
+            end 
+
+            else if (cnt != 3'd0) begin
                 cnt <= cnt - 3'd1;
+
                 if (cnt == 3'd1) begin
-                    done <= 1'b1;  // 拉一拍 done
+                    done      <= 1'b1;
+                    syndromes <= syndrome_override;  // ★ TB 控制輸出 ★
                 end else begin
                     done <= 1'b0;
                 end
-            end else begin
+            end 
+
+            else begin
                 done <= 1'b0;
             end
+
         end
     end
 
