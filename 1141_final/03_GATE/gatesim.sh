@@ -1,0 +1,13 @@
+rm -f rtl.f
+echo "../01_RTL/test.v" >> rtl.f
+echo "../02_SYN/Netlist/bch_syn.v" >> rtl.f
+echo "-v /home/raid7_2/course/cvsd/CBDK_IC_Contest/CIC/Verilog/tsmc13_neg.v" >> rtl.f
+
+ln -sf ../01_RTL/testdata/ testdata
+
+cycleT=$(grep -oE "[0-9]+\.[0-9]+" cycle.txt)
+
+vcs -f rtl.f -pvalue+CYCLE=${cycleT} -pvalue+PATTERN=100 +define+SDF_GATE -full64 -R -debug_access+all +v2k +maxdelays -negdelay +neg_tchk
+vcs -f rtl.f -pvalue+CYCLE=${cycleT} -pvalue+PATTERN=200 +define+SDF_GATE -full64 -R -debug_access+all +v2k +maxdelays -negdelay +neg_tchk
+vcs -f rtl.f -pvalue+CYCLE=${cycleT} -pvalue+PATTERN=300 +define+SDF_GATE -full64 -R -debug_access+all +v2k +maxdelays -negdelay +neg_tchk
+
